@@ -3,6 +3,7 @@
 build/
 dist/
 *.apk
+!compatibility/*.apk
 *.dex
 .kotlin/
 captures/
