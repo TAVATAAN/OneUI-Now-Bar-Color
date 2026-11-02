@@ -1,0 +1,10 @@
+id=com.tavataan.nowbarcolor
+name=Now Bar Color
+version=1.0.0
+versionCode=1
+author=tavataan
+description=Personaliza el color de fondo de la cápsula Now Bar contraída en la pantalla de bloqueo (Paleta fija, Color del Fondo de Bloqueo, Sólido o Blur) sin alterar fotos, iconos ni textos.
+minApi=31
+targetApi=35
+minXposedVersion=93
+staticScope=true
