@@ -56,7 +56,7 @@ Incluye una aplicación de configuración con estética nativa One UI, soporte p
 
 ## 🚀 Instalación / Installation
 
-1. Descarga el APK más reciente desde la sección de **[Releases](https://github.com/tavataan/NowBarColor/releases)**.
+1. Descarga el APK más reciente desde la sección de **[Releases](https://github.com/TAVATAAN/OneUI-Now-Bar-Color/releases)**.
 2. Instala el APK en tu dispositivo.
 3. Abre el administrador de **LSPosed**:
    - Activa el módulo **Now Bar Color**.
@@ -74,8 +74,8 @@ El proyecto utiliza un pipeline ligero y autónomo en Python (`build.py`) compat
 
 ```bash
 # Clonar el repositorio
-git clone https://github.com/tavataan/NowBarColor.git
-cd NowBarColor
+git clone https://github.com/TAVATAAN/OneUI-Now-Bar-Color.git
+cd OneUI-Now-Bar-Color
 
 # Compilar y generar el APK firmado
 python3 build.py
