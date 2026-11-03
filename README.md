@@ -141,11 +141,16 @@ build/NowBarColor.apk
 ├── src/io/github/tavataan/nowbarcolor/
 │   ├── MainActivity.java        # One UI settings activity with Live Preview & HSV Pickers
 │   ├── NowBarHook.java          # Core LSPosed hooking engine for SystemUI & FaceWidget/AOD
+│   ├── CapsuleGradient.java     # Adaptive GradientDrawable tracking internal state mutations
+│   ├── CapsuleStyle.java        # Styling pipeline managing Solid, Blur, and Gradient states
+│   ├── ReflectionCache.java     # High-performance reflection cache for SystemUI fields/methods
 │   ├── ConfigManager.java       # Configuration persistence and per-category data models
 │   ├── WallpaperColorHelper.java# Real-time wallpaper color extractor (Monet, Bottom Zone)
 │   ├── OneUIMediaCapsuleView.java# Dynamic preview component with live audio waveform bars
 │   ├── OneUISwitch.java         # Custom Samsung One UI-styled toggle switch
-│   └── HsvColorPickerView.java  # Touch-responsive HSV color picker
+│   ├── HsvColorPickerView.java  # Touch-responsive HSV color picker
+│   └── I18n.java                # Trilingual localization manager (EN, ES, PT)
+├── tests/                       # Automated host test suite
 └── build.py                     # Standalone compilation and packaging pipeline
 ```
 

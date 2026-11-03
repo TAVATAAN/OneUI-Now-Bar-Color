@@ -50,6 +50,8 @@ public class HsvColorPickerView extends LinearLayout {
     private OnColorChangeListener mListener;
     private OnColorAndOpacityChangeListener mColorAndOpacityListener;
 
+    private final GradientDrawable mPillColorBackground = new GradientDrawable();
+    private final GradientDrawable mPillHexBackground = new GradientDrawable();
     private TextView mPillCurrentColor;
     private TextView mPillHexCode;
     private Canvas2DView mCanvas2D;
@@ -269,18 +271,18 @@ public class HsvColorPickerView extends LinearLayout {
         String hex6 = String.format("%06X", (currentColor & 0x00FFFFFF));
 
         // Update Pill background with rounded corners
-        GradientDrawable pillBg = new GradientDrawable();
+        GradientDrawable pillBg = mPillColorBackground;
         pillBg.setColor(currentColor | 0xFF000000);
         pillBg.setCornerRadius(dp(23));
         pillBg.setStroke(dp(1), 0x33FFFFFF);
 
-        GradientDrawable pillBg2 = new GradientDrawable();
+        GradientDrawable pillBg2 = mPillHexBackground;
         pillBg2.setColor(currentColor | 0xFF000000);
         pillBg2.setCornerRadius(dp(23));
         pillBg2.setStroke(dp(1), 0x33FFFFFF);
 
-        mPillCurrentColor.setBackground(pillBg);
-        mPillHexCode.setBackground(pillBg2);
+        if (mPillCurrentColor.getBackground() != pillBg) mPillCurrentColor.setBackground(pillBg);
+        if (mPillHexCode.getBackground() != pillBg2) mPillHexCode.setBackground(pillBg2);
         mPillHexCode.setText(hex6);
 
         if (mListener != null) {
@@ -313,6 +315,7 @@ public class HsvColorPickerView extends LinearLayout {
 
         private final Path mClipPath = new Path();
         private final RectF mBounds = new RectF();
+        private final RectF mCursorRect = new RectF();
         private Shader mShader;
         private int mLastWidth = 0;
         private int mLastHeight = 0;
@@ -422,7 +425,8 @@ public class HsvColorPickerView extends LinearLayout {
             float half = cursorSize / 2f;
             float left = Math.max(half, Math.min(w - half, cursorX)) - half;
             float top = Math.max(half, Math.min(h - half, cursorY)) - half;
-            RectF cursorRect = new RectF(left, top, left + cursorSize, top + cursorSize);
+            RectF cursorRect = mCursorRect;
+            cursorRect.set(left, top, left + cursorSize, top + cursorSize);
 
             // Dark outline first, then red border
             canvas.drawRoundRect(cursorRect, dp(3), dp(3), mCursorStrokeDark);

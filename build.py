@@ -1,118 +1,111 @@
-import subprocess
+#!/usr/bin/env python3
+"""Build from any checkout. --check-java requires only a JDK and Android jar."""
+import argparse
 import os
-import zipfile
+from pathlib import Path
 import shutil
+import subprocess
+import sys
+import zipfile
 
-base = '/data/user/0/com.agy/files/antigravity/proud-brahmagupta'
-android_jar = '/data/user/0/com.agy/files/android-sdk/platforms/android-34/android.jar'
-if not os.path.exists(android_jar):
-    android_jar = '/data/user/0/com.agy/files/.gemini/antigravity-app/brain/f2e9ea73-6caf-4717-819b-37b1ded44f9e/scratch/android.jar'
+BASE = Path(__file__).resolve().parent
 
-src_dir = os.path.join(base, 'src')
-classes_dir = os.path.join(base, 'build', 'classes')
-dex_dir = os.path.join(base, 'build', 'dex')
-manifest = os.path.join(base, 'AndroidManifest.xml')
-res_dir = os.path.join(base, 'res')
-assets_dir = os.path.join(base, 'assets')
-dex_file = os.path.join(dex_dir, 'classes.dex')
-unsigned_apk = os.path.join(base, 'build', 'unsigned.apk')
-aligned_apk = os.path.join(base, 'build', 'aligned.apk')
-final_apk = os.path.join(base, 'build', 'NowBarColor.apk')
-keystore = os.path.join(base, 'build', 'debug.keystore')
 
-if os.path.exists(classes_dir):
-    shutil.rmtree(classes_dir)
-os.makedirs(classes_dir, exist_ok=True)
-os.makedirs(dex_dir, exist_ok=True)
+def run(command):
+    subprocess.run([str(arg) for arg in command], check=True)
 
-# 1. javac
-sources = []
-for root, dirs, files in os.walk(src_dir):
-    for f in files:
-        if f.endswith('.java'):
-            sources.append(os.path.join(root, f))
 
-cmd_javac = ['javac', '-cp', android_jar, '-d', classes_dir, '-source', '8', '-target', '8'] + sources
-subprocess.run(cmd_javac, check=True)
-print('1. javac compilation successful')
+def main():
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument('--android-jar', default=os.environ.get('ANDROID_JAR'))
+    parser.add_argument('--build-tools', default=os.environ.get('ANDROID_BUILD_TOOLS'))
+    parser.add_argument('--check-java', action='store_true')
+    parser.add_argument('--keystore', default=str(BASE / 'build' / 'debug.keystore'))
+    parser.add_argument('--alias', default='androiddebugkey')
+    args = parser.parse_args()
+    sdk = os.environ.get('ANDROID_SDK_ROOT') or os.environ.get('ANDROID_HOME')
+    android = Path(args.android_jar) if args.android_jar else None
+    if android is None and sdk:
+        platforms = list((Path(sdk) / 'platforms').glob('android-*/android.jar'))
+        platforms = [p for p in platforms if p.parent.name[8:].isdigit()]
+        if platforms:
+            android = max(platforms, key=lambda p: int(p.parent.name[8:]))
+    if android is None:
+        default_sdk = Path('/data/user/0/com.agy/files/android-sdk/platforms')
+        if default_sdk.is_dir():
+            platforms = list(default_sdk.glob('android-*/android.jar'))
+            platforms = [p for p in platforms if p.parent.name[8:].isdigit()]
+            if platforms:
+                android = max(platforms, key=lambda p: int(p.parent.name[8:]))
+    if android is None or not android.is_file():
+        parser.error('Supply --android-jar /path/to/android.jar, or set ANDROID_HOME / ANDROID_SDK_ROOT.')
+    if not args.check_java and not (BASE / 'res/drawable/ic_launcher.png').is_file():
+        parser.error('Missing res/drawable/ic_launcher.png.')
 
-# 2. Remove compileOnly Xposed stubs from classes_dir
-xposed_stubs = os.path.join(classes_dir, 'de')
-if os.path.exists(xposed_stubs):
-    shutil.rmtree(xposed_stubs)
-    print('2. Removed Xposed stub classes from build/classes')
+    build = BASE / 'build'
+    classes = build / 'classes'
+    dex = build / 'dex'
+    for directory in (classes, dex):
+        if directory.exists():
+            shutil.rmtree(directory)
+        directory.mkdir(parents=True)
+    sources = sorted((BASE / 'src').rglob('*.java'))
+    # javac also works via the JDK compiler module on hosts lacking a javac launcher.
+    javac = ['javac'] if shutil.which('javac') else ['java', 'com.sun.tools.javac.Main']
+    run(javac + ['-encoding', 'UTF-8', '-source', '8', '-target', '8', '-cp', android, '-d', classes] + sources)
+    print('Java compilation passed.', flush=True)
+    if args.check_java:
+        return
 
-# 3. d8
-class_files = []
-for root, dirs, files in os.walk(classes_dir):
-    for f in files:
-        if f.endswith('.class'):
-            class_files.append(os.path.join(root, f))
+    def tool(name):
+        candidate = Path(args.build_tools) / name if args.build_tools else None
+        if candidate is not None and candidate.is_file():
+            return candidate
+        resolved = shutil.which(name)
+        if not resolved:
+            raise RuntimeError('Missing ' + name + '; set --build-tools or PATH.')
+        return resolved
 
-if os.path.exists(dex_file):
-    os.remove(dex_file)
+    stubs = build / 'xposed-compile-only.jar'
+    with zipfile.ZipFile(stubs, 'w') as archive:
+        for path in sorted((classes / 'de').rglob('*.class')):
+            archive.write(path, path.relative_to(classes))
+    app_classes = sorted((classes / 'io').rglob('*.class'))
+    run([tool('d8'), '--min-api', '31', '--lib', android, '--classpath', stubs,
+         '--output', dex] + app_classes)
+    unsigned = build / 'unsigned.apk'
+    aligned = build / 'aligned.apk'
+    final = build / 'NowBarColor.apk'
+    run([tool('aapt'), 'package', '-f', '-M', BASE / 'AndroidManifest.xml',
+         '-S', BASE / 'res', '-A', BASE / 'assets', '-I', android, '-F', unsigned])
+    with zipfile.ZipFile(unsigned, 'a') as archive:
+        for path in sorted(dex.glob('*.dex')):
+            archive.write(path, path.name)
+        for path in sorted((BASE / 'meta_xposed').iterdir()):
+            if path.is_file():
+                archive.write(path, 'META-INF/xposed/' + path.name)
+    run([tool('zipalign'), '-p', '-f', '4', unsigned, aligned])
+    keystore = Path(args.keystore).expanduser().resolve()
+    signing_env = os.environ.copy()
+    signing_env.setdefault('NOWBAR_STORE_PASS', 'android')
+    signing_env.setdefault('NOWBAR_KEY_PASS', signing_env['NOWBAR_STORE_PASS'])
+    if not keystore.exists():
+        if keystore != (build / 'debug.keystore').resolve():
+            raise RuntimeError('Provided signing keystore does not exist: ' + str(keystore))
+        subprocess.run(['keytool', '-genkeypair', '-keystore', str(keystore),
+                        '-storepass:env', 'NOWBAR_STORE_PASS', '-keypass:env', 'NOWBAR_KEY_PASS',
+                        '-alias', args.alias, '-keyalg', 'RSA', '-keysize', '2048', '-validity', '10000',
+                        '-dname', 'CN=NowBarColor,O=LSPosed,C=US'], env=signing_env, check=True)
+    subprocess.run([str(tool('apksigner')), 'sign', '--ks', str(keystore), '--ks-key-alias', args.alias,
+                    '--ks-pass', 'env:NOWBAR_STORE_PASS', '--key-pass', 'env:NOWBAR_KEY_PASS',
+                    '--out', str(final), str(aligned)], env=signing_env, check=True)
+    run([tool('apksigner'), 'verify', '--verbose', final])
+    print('APK:', final)
 
-cmd_d8 = ['d8', '--lib', android_jar, '--output', dex_dir] + class_files
-subprocess.run(cmd_d8, check=True)
-print('3. d8 conversion successful. classes.dex generated:', os.path.exists(dex_file))
 
-# 4. aapt package
-for f in [unsigned_apk, aligned_apk, final_apk]:
-    if os.path.exists(f):
-        os.remove(f)
-
-cmd_aapt = [
-    'aapt', 'package', '-f',
-    '-M', manifest,
-    '-S', res_dir,
-    '-A', assets_dir,
-    '-I', android_jar,
-    '-F', unsigned_apk
-]
-subprocess.run(cmd_aapt, check=True)
-print('4. aapt package successful')
-
-# 5. Add classes.dex and META-INF/xposed into APK
-meta_xposed_dir = os.path.join(base, 'meta_xposed')
-with zipfile.ZipFile(unsigned_apk, 'a') as z:
-    z.write(dex_file, 'classes.dex')
-    if os.path.exists(meta_xposed_dir):
-        for fname in os.listdir(meta_xposed_dir):
-            fpath = os.path.join(meta_xposed_dir, fname)
-            z.write(fpath, f'META-INF/xposed/{fname}')
-            print(f'5. Added META-INF/xposed/{fname} into APK')
-print('5. Added classes.dex and META-INF/xposed into unsigned APK')
-
-# 6. zipalign
-subprocess.run(['zipalign', '-p', '-f', '4', unsigned_apk, aligned_apk], check=True)
-print('6. zipalign successful')
-
-# 7. Reuse or generate keystore & sign with apksigner
-existing_ks = '/data/user/0/com.agy/files/.gemini/antigravity-app/brain/f2e9ea73-6caf-4717-819b-37b1ded44f9e/scratch/nowbar_fix/build/debug.keystore'
-if not os.path.exists(keystore) and os.path.exists(existing_ks):
-    shutil.copyfile(existing_ks, keystore)
-
-if not os.path.exists(keystore):
-    cmd_keytool = [
-        'keytool', '-genkeypair', '-v',
-        '-keystore', keystore,
-        '-storepass', 'android',
-        '-alias', 'androiddebugkey',
-        '-keypass', 'android',
-        '-keyalg', 'RSA',
-        '-keysize', '2048',
-        '-validity', '10000',
-        '-dname', 'CN=NowBarColor,O=LSPosed,C=US'
-    ]
-    subprocess.run(cmd_keytool, check=True)
-
-cmd_sign = [
-    'apksigner', 'sign',
-    '--ks', keystore,
-    '--ks-pass', 'pass:android',
-    '--key-pass', 'pass:android',
-    '--out', final_apk,
-    aligned_apk
-]
-subprocess.run(cmd_sign, check=True)
-print('7. apksigner successful. Final APK:', final_apk, 'Size:', os.path.getsize(final_apk))
+if __name__ == '__main__':
+    try:
+        main()
+    except (OSError, RuntimeError, subprocess.CalledProcessError) as error:
+        print('Build failed:', error, file=sys.stderr)
+        sys.exit(1)

@@ -8,18 +8,20 @@ import android.content.Intent;
 import android.content.IntentFilter;
 import android.database.ContentObserver;
 import android.graphics.Color;
-import android.graphics.drawable.GradientDrawable;
 import android.net.Uri;
 import android.os.Build;
 import android.os.Handler;
+import android.os.HandlerThread;
 import android.os.Looper;
 import android.provider.Settings;
 import android.view.View;
 import android.view.ViewGroup;
 import android.view.ViewParent;
+import android.view.ViewTreeObserver;
+import java.lang.ref.WeakReference;
+import java.util.Locale;
 import android.widget.TextView;
 
-import java.lang.reflect.Constructor;
 import java.lang.reflect.Field;
 import java.lang.reflect.Method;
 import java.util.ArrayList;
@@ -37,17 +39,75 @@ import de.robv.android.xposed.XposedHelpers;
 import de.robv.android.xposed.callbacks.XC_LoadPackage;
 
 public class NowBarHook implements IXposedHookLoadPackage {
+    private static final Object[] NO_ARGUMENTS = new Object[0];
     private static final String TAG = "NowBarColorHook";
     private static final Set<ClassLoader> HOOKED_CLASSLOADERS = Collections.synchronizedSet(new HashSet<ClassLoader>());
     private static final Set<View> ACTIVE_CARDS = Collections.synchronizedSet(Collections.newSetFromMap(new WeakHashMap<View, Boolean>()));
     private static final Set<View> ACTIVE_GENUI_BLUR_VIEWS = Collections.synchronizedSet(Collections.newSetFromMap(new WeakHashMap<View, Boolean>()));
     private static final Set<View> ACTIVE_GENUI_GUIDING_VIEWS = Collections.synchronizedSet(Collections.newSetFromMap(new WeakHashMap<View, Boolean>()));
 
-    private static volatile ConfigManager.Config sConfig = new ConfigManager.Config();
+    private static volatile ConfigManager.Config sConfig = null;
     private static volatile WallpaperColorHelper.PaletteResult sLivePalette = null;
     private static volatile boolean sReceiverRegistered = false;
     private static volatile Context sSysUiContext = null;
     private static volatile Handler sMainHandler = null;
+
+    // Main-thread request state; slow provider/wallpaper work runs on one worker.
+    private static Handler sIoHandler;
+    private static int sConfigVersion;
+    private static boolean sWallpaperRequested;
+    private static boolean sRefreshPosted;
+    private static boolean sLoadRunning;
+    private static boolean sReloadAfterFlight;
+    private static final Runnable RELOAD = new Runnable() {
+        @Override public void run() {
+            final Context context = sSysUiContext;
+            if (context == null) return;
+            if (sLoadRunning) {
+                sReloadAfterFlight = true;
+                return;
+            }
+            sLoadRunning = true;
+            final int version = sConfigVersion;
+            final boolean wallpaper = sWallpaperRequested || sLivePalette == null;
+            sWallpaperRequested = false;
+            if (sIoHandler == null) {
+                HandlerThread worker = new HandlerThread("NowBarColor-IO", android.os.Process.THREAD_PRIORITY_BACKGROUND);
+                worker.start();
+                sIoHandler = new Handler(worker.getLooper());
+            }
+            sIoHandler.post(new Runnable() {
+                @Override public void run() {
+                    ConfigManager.Config loadedConfig = null;
+                    WallpaperColorHelper.PaletteResult loadedPalette = null;
+                    try {
+                        loadedConfig = ConfigManager.loadFromSystemSettings(context);
+                        if (wallpaper) loadedPalette = WallpaperColorHelper.extractLockWallpaperPalette(context, false);
+                    } catch (Throwable t) {
+                        XposedBridge.log(TAG + ": background config load failed: " + t.getMessage());
+                    }
+                    final ConfigManager.Config config = loadedConfig;
+                    final WallpaperColorHelper.PaletteResult palette = loadedPalette;
+                    Handler main = getMainHandler();
+                    if (main != null) main.post(new Runnable() {
+                        @Override public void run() {
+                            // A direct broadcast or newer request must win over an older read.
+                            if (config != null && version == sConfigVersion) sConfig = config;
+                            if (palette != null) sLivePalette = palette;
+                            sLoadRunning = false;
+                            refreshAllActiveCards();
+                            if (sReloadAfterFlight) {
+                                sReloadAfterFlight = false;
+                                Handler handler = getMainHandler();
+                                handler.removeCallbacks(RELOAD);
+                                handler.post(RELOAD);
+                            }
+                        }
+                    });
+                }
+            });
+        }
+    };
 
     private static Handler getMainHandler() {
         if (sMainHandler == null) {
@@ -57,6 +117,134 @@ public class NowBarHook implements IXposedHookLoadPackage {
             }
         }
         return sMainHandler;
+    }
+
+    /** Track only presentation changes, not animation progress or notification text. */
+    private static final class MediaPresentation {
+        final MediaLayer stack = new MediaLayer();
+        final MediaLayer normal = new MediaLayer();
+        boolean initialized;
+        boolean collapsed;
+
+        boolean capture(View card) {
+            boolean nowCollapsed = isCollapsedLockscreenCapsule(card);
+            boolean changed = !initialized || collapsed != nowCollapsed;
+            initialized = true;
+            collapsed = nowCollapsed;
+            // Evaluate both even when another part has changed.
+            changed |= stack.capture(getViewField(card, "p1"), nowCollapsed);
+            changed |= normal.capture(getViewField(card, "o1"), nowCollapsed);
+            return changed;
+        }
+    }
+
+    private static final class MediaLayer {
+        WeakReference<View> viewRef;
+        WeakReference<android.graphics.drawable.Drawable> backgroundRef;
+        int visibility = -1;
+        boolean hasAlpha;
+
+        boolean capture(View view, boolean inspectGradient) {
+            View previous = viewRef == null ? null : viewRef.get();
+            android.graphics.drawable.Drawable background = view == null ? null : view.getBackground();
+            android.graphics.drawable.Drawable oldBackground = backgroundRef == null ? null : backgroundRef.get();
+            int nextVisibility = view == null ? -1 : view.getVisibility();
+            boolean nextAlpha = view != null && view.getAlpha() > 0f;
+            boolean changed = previous != view || oldBackground != background
+                    || visibility != nextVisibility || hasAlpha != nextAlpha;
+            if (previous != view) viewRef = view == null ? null : new WeakReference<>(view);
+            if (oldBackground != background) backgroundRef = background == null ? null : new WeakReference<>(background);
+            visibility = nextVisibility;
+            hasAlpha = nextAlpha;
+            return changed || (inspectGradient && CapsuleStyle.needsGradientRepair(view));
+        }
+    }
+
+    /** Coalesce requests. Media additionally observes state on existing frames only. */
+    private static final class CardUpdate implements ViewTreeObserver.OnPreDrawListener,
+            View.OnAttachStateChangeListener {
+        final WeakReference<View> cardRef;
+        ViewTreeObserver observer;
+        boolean applying;
+        boolean dirty;
+        final MediaPresentation media;
+
+        CardUpdate(View card) {
+            cardRef = new WeakReference<>(card);
+            media = card.getClass().getName().endsWith("NowBarMediaCardView") ? new MediaPresentation() : null;
+            card.addOnAttachStateChangeListener(this);
+        }
+
+        void request() {
+            View card = cardRef.get();
+            if (card == null || applying || !card.isAttachedToWindow()) return;
+            boolean wasDirty = dirty;
+            dirty = true;
+            if (observer != null) {
+                if (!wasDirty) card.invalidate();
+                return;
+            }
+            ViewTreeObserver tree = card.getViewTreeObserver();
+            if (!tree.isAlive()) return;
+            observer = tree;
+            tree.addOnPreDrawListener(this);
+            card.invalidate();
+        }
+
+        void remove() {
+            if (observer == null) return;
+            ViewTreeObserver tree = observer;
+            observer = null;
+            if (!tree.isAlive()) {
+                View card = cardRef.get();
+                tree = card == null ? null : card.getViewTreeObserver();
+            }
+            if (tree != null && tree.isAlive()) tree.removeOnPreDrawListener(this);
+        }
+
+        @Override public boolean onPreDraw() {
+            View card = cardRef.get();
+            if (card == null || !card.isAttachedToWindow()) {
+                remove();
+                return true;
+            }
+            if (media == null) remove();
+            boolean changed = media != null && media.capture(card);
+            if (!dirty && !changed) return true;
+            dirty = false;
+            applying = true;
+            try { applyOrRestoreCardBackground(card); }
+            finally {
+                applying = false;
+                // Ignore our own drawable changes on the next frame.
+                if (media != null) media.capture(card);
+            }
+            return true;
+        }
+
+        @Override public void onViewAttachedToWindow(View view) { request(); }
+        @Override public void onViewDetachedFromWindow(View view) { remove(); }
+    }
+
+    private static void requestCardUpdate(final View card) {
+        if (card == null) return;
+        Handler handler = getMainHandler();
+        if (handler == null) return;
+        if (Looper.myLooper() != handler.getLooper()) {
+            handler.post(new Runnable() {
+                @Override public void run() { requestCardUpdate(card); }
+            });
+            return;
+        }
+        if (Boolean.TRUE.equals(XposedHelpers.getAdditionalInstanceField(card, "nb_restoring"))) return;
+        CardUpdate update = (CardUpdate) XposedHelpers.getAdditionalInstanceField(card, "nb_update");
+        if (update == null) {
+            update = new CardUpdate(card);
+            XposedHelpers.setAdditionalInstanceField(card, "nb_update", update);
+            ACTIVE_CARDS.add(card);
+        }
+        ensureSystemUiListeners(card.getContext());
+        update.request();
     }
 
     @Override
@@ -179,25 +367,7 @@ public class NowBarHook implements IXposedHookLoadPackage {
                         card = (View) param.args[0];
                     }
                     if (card != null) {
-                        final View fCard = card;
-                        ACTIVE_CARDS.add(fCard);
-                        ensureSystemUiListeners(fCard.getContext());
-                        if (Boolean.TRUE.equals(XposedHelpers.getAdditionalInstanceField(fCard, "nb_restoring"))) {
-                            return;
-                        }
-                        applyOrRestoreCardBackground(fCard);
-                        if (!Boolean.TRUE.equals(XposedHelpers.getAdditionalInstanceField(fCard, "nb_post_pending"))) {
-                            XposedHelpers.setAdditionalInstanceField(fCard, "nb_post_pending", Boolean.TRUE);
-                            fCard.post(new Runnable() {
-                                @Override
-                                public void run() {
-                                    XposedHelpers.setAdditionalInstanceField(fCard, "nb_post_pending", Boolean.FALSE);
-                                    if (fCard.isAttachedToWindow()) {
-                                        applyOrRestoreCardBackground(fCard);
-                                    }
-                                }
-                            });
-                        }
+                        requestCardUpdate(card);
                     }
                 }
             };
@@ -221,6 +391,7 @@ public class NowBarHook implements IXposedHookLoadPackage {
                     XposedBridge.hookAllConstructors(cardCls, cardUpdateHook);
                 } catch (Throwable ignored) {}
                 for (String mName : commonMethods) {
+                    if (cardCls == baseCardClass && "U".equals(mName)) continue;
                     try {
                         XposedBridge.hookAllMethods(cardCls, mName, cardUpdateHook);
                     } catch (Throwable ignored) {}
@@ -238,20 +409,7 @@ public class NowBarHook implements IXposedHookLoadPackage {
                             if (param.args != null && param.args.length > 0 && param.args[0] != null) {
                                 XposedHelpers.setAdditionalInstanceField(card, "nb_cached_item", param.args[0]);
                             }
-                            ACTIVE_CARDS.add(card);
-                            ensureSystemUiListeners(card.getContext());
-                            if (Boolean.TRUE.equals(XposedHelpers.getAdditionalInstanceField(card, "nb_restoring"))) {
-                                return;
-                            }
-                            applyOrRestoreCardBackground(card);
-                            card.post(new Runnable() {
-                                @Override
-                                public void run() {
-                                    if (card.isAttachedToWindow()) {
-                                        applyOrRestoreCardBackground(card);
-                                    }
-                                }
-                            });
+                            requestCardUpdate(card);
                         }
                     }
                 });
@@ -301,20 +459,7 @@ public class NowBarHook implements IXposedHookLoadPackage {
                             if (param.args != null && param.args.length > 0 && param.args[0] != null) {
                                 XposedHelpers.setAdditionalInstanceField(card, "nb_cached_item", param.args[0]);
                             }
-                            ACTIVE_CARDS.add(card);
-                            ensureSystemUiListeners(card.getContext());
-                            if (Boolean.TRUE.equals(XposedHelpers.getAdditionalInstanceField(card, "nb_restoring"))) {
-                                return;
-                            }
-                            applyOrRestoreCardBackground(card);
-                            card.post(new Runnable() {
-                                @Override
-                                public void run() {
-                                    if (card.isAttachedToWindow()) {
-                                        applyOrRestoreCardBackground(card);
-                                    }
-                                }
-                            });
+                            requestCardUpdate(card);
                         }
                     }
                 });
@@ -411,7 +556,7 @@ public class NowBarHook implements IXposedHookLoadPackage {
                                 if (Boolean.TRUE.equals(XposedHelpers.getAdditionalInstanceField(card, "nb_restoring"))) {
                                     return;
                                 }
-                                applyOrRestoreCardBackground(card);
+                                requestCardUpdate(card);
                             }
                         }
                     });
@@ -459,7 +604,7 @@ public class NowBarHook implements IXposedHookLoadPackage {
                             }
                         }
                     });
-                    String[] briefMethods = new String[]{"g0", "l0", "h"};
+                    String[] briefMethods = new String[]{"g0", "l0"};
                     for (String mName : briefMethods) {
                         try {
                             XposedBridge.hookAllMethods(briefCardClass, mName, cardUpdateHook);
@@ -500,19 +645,9 @@ public class NowBarHook implements IXposedHookLoadPackage {
                         if (param.thisObject instanceof ViewGroup) {
                             final ViewGroup stack = (ViewGroup) param.thisObject;
                             ensureSystemUiListeners(stack.getContext());
-                            stack.post(new Runnable() {
-                                @Override
-                                public void run() {
-                                    int count = stack.getChildCount();
-                                    for (int i = 0; i < count; i++) {
-                                        View child = stack.getChildAt(i);
-                                        if (child != null) {
-                                            ACTIVE_CARDS.add(child);
-                                            applyOrRestoreCardBackground(child);
-                                        }
-                                    }
-                                }
-                            });
+                            for (int i = 0; i < stack.getChildCount(); i++) {
+                                requestCardUpdate(stack.getChildAt(i));
+                            }
                         }
                     }
                 });
@@ -523,17 +658,7 @@ public class NowBarHook implements IXposedHookLoadPackage {
                     protected void afterHookedMethod(MethodHookParam param) {
                         if (param.args != null && param.args.length > 0 && param.args[0] instanceof View) {
                             final View card = (View) param.args[0];
-                            ACTIVE_CARDS.add(card);
-                            ensureSystemUiListeners(card.getContext());
-                            applyOrRestoreCardBackground(card);
-                            card.post(new Runnable() {
-                                @Override
-                                public void run() {
-                                    if (card.isAttachedToWindow()) {
-                                        applyOrRestoreCardBackground(card);
-                                    }
-                                }
-                            });
+                            requestCardUpdate(card);
                         }
                     }
                 });
@@ -641,7 +766,7 @@ public class NowBarHook implements IXposedHookLoadPackage {
                         if (!(orig instanceof List) || ((List<?>) orig).isEmpty()) {
                             return;
                         }
-                        if (shouldCustomizeCatBrief() && isAnyBriefCardCollapsed() && isCapsuleRootBaseStyle(param.thisObject)) {
+                        if (shouldCustomizeCatBrief() && isCapsuleRootBaseStyle(param.thisObject) && isAnyBriefCardCollapsed()) {
                             ConfigManager.Config gcfg = sConfig;
                             int[] grad = gcfg != null ? gcfg.resolveGradientArgbForCategory(ConfigManager.CAT_BRIEF) : null;
                             if (grad != null) {
@@ -663,7 +788,7 @@ public class NowBarHook implements IXposedHookLoadPackage {
                     XposedBridge.hookAllMethods(baseStyleClass, "getBackgroundStyle", new XC_MethodHook() {
                         @Override
                         protected void afterHookedMethod(MethodHookParam param) {
-                            if (shouldCustomizeCatBrief() && isAnyBriefCardCollapsed() && isCapsuleRootBaseStyle(param.thisObject)) {
+                            if (shouldCustomizeCatBrief() && isCapsuleRootBaseStyle(param.thisObject) && isAnyBriefCardCollapsed()) {
                                 ConfigManager.Config gcfg = sConfig;
                                 int[] grad = gcfg != null ? gcfg.resolveGradientArgbForCategory(ConfigManager.CAT_BRIEF) : null;
                                 if (grad != null) {
@@ -677,7 +802,7 @@ public class NowBarHook implements IXposedHookLoadPackage {
                     XposedBridge.hookAllMethods(baseStyleClass, "getBackgroundAlpha", new XC_MethodHook() {
                         @Override
                         protected void afterHookedMethod(MethodHookParam param) {
-                            if (shouldCustomizeCatBrief() && isAnyBriefCardCollapsed() && isCapsuleRootBaseStyle(param.thisObject)) {
+                            if (shouldCustomizeCatBrief() && isCapsuleRootBaseStyle(param.thisObject) && isAnyBriefCardCollapsed()) {
                                 param.setResult(null);
                             }
                         }
@@ -723,6 +848,7 @@ public class NowBarHook implements IXposedHookLoadPackage {
                                 if (ConfigManager.ACTION_CONFIG_UPDATED.equals(action)) {
                                     String json = intent.getStringExtra("config_json");
                                     if (json != null && !json.isEmpty()) {
+                                        sConfigVersion++;
                                         sConfig = ConfigManager.Config.fromJsonString(json);
                                         refreshAllActiveCards();
                                         return;
@@ -774,8 +900,7 @@ public class NowBarHook implements IXposedHookLoadPackage {
                             wm.addOnColorsChangedListener(new WallpaperManager.OnColorsChangedListener() {
                                 @Override
                                 public void onColorsChanged(WallpaperColors colors, int which) {
-                                    sLivePalette = WallpaperColorHelper.extractLockWallpaperPalette(appCtx, false);
-                                    refreshAllActiveCards();
+                                    reloadConfigAndRefreshAll(appCtx, true);
                                 }
                             }, h);
                         }
@@ -786,32 +911,30 @@ public class NowBarHook implements IXposedHookLoadPackage {
     }
 
     private static void reloadConfigAndRefreshAll(Context context, boolean refreshWallpaper) {
-        try {
-            if (context != null) {
-                sConfig = ConfigManager.loadFromSystemSettings(context);
-                if (refreshWallpaper || sLivePalette == null) {
-                    sLivePalette = WallpaperColorHelper.extractLockWallpaperPalette(context, false);
-                }
-            }
-            refreshAllActiveCards();
-        } catch (Throwable t) {
-            XposedBridge.log(TAG + ": reloadConfigAndRefreshAll error: " + t.getMessage());
-        }
+        Handler main = getMainHandler();
+        if (main == null || context == null) return;
+        sConfigVersion++;
+        sWallpaperRequested |= refreshWallpaper;
+        main.removeCallbacks(RELOAD);
+        main.postDelayed(RELOAD, 32);
     }
 
     private static void refreshAllActiveCards() {
         Handler h = getMainHandler();
         if (h == null) return;
+        if (sRefreshPosted) return;
+        sRefreshPosted = true;
         h.post(new Runnable() {
             @Override
             public void run() {
+                sRefreshPosted = false;
                 List<View> cards;
                 synchronized (ACTIVE_CARDS) {
                     cards = new ArrayList<>(ACTIVE_CARDS);
                 }
                 for (View card : cards) {
                     if (card != null && card.isAttachedToWindow()) {
-                        applyOrRestoreCardBackground(card);
+                        requestCardUpdate(card);
                     }
                 }
 
@@ -840,10 +963,6 @@ public class NowBarHook implements IXposedHookLoadPackage {
 
     private static Integer getLiveWallpaperColorForConfig(ConfigManager.Config cfg) {
         WallpaperColorHelper.PaletteResult pal = sLivePalette;
-        if (pal == null && sSysUiContext != null) {
-            pal = WallpaperColorHelper.extractLockWallpaperPalette(sSysUiContext, false);
-            sLivePalette = pal;
-        }
         if (pal != null) {
             return WallpaperColorHelper.resolveForVariant(pal, cfg.wallpaperVariant);
         }
@@ -876,20 +995,15 @@ public class NowBarHook implements IXposedHookLoadPackage {
     }
 
     private static boolean isAnyBriefCardCollapsed() {
-        List<View> cards;
-        synchronized (ACTIVE_CARDS) {
-            cards = new ArrayList<>(ACTIVE_CARDS);
-        }
         boolean foundBriefCard = false;
-        for (View card : cards) {
-            if (card != null && card.getClass().getName().endsWith("NowBarBriefCardView")) {
-                foundBriefCard = true;
-                if (isCollapsedLockscreenCapsule(card)) {
-                    return true;
+        synchronized (ACTIVE_CARDS) {
+            for (View card : ACTIVE_CARDS) {
+                if (card != null && card.getClass().getName().endsWith("NowBarBriefCardView")) {
+                    foundBriefCard = true;
+                    if (isCollapsedLockscreenCapsule(card)) return true;
                 }
             }
         }
-        // If GenUI composes before NowBarBriefCardView is registered in ACTIVE_CARDS, default to true
         return !foundBriefCard;
     }
 
@@ -985,6 +1099,7 @@ public class NowBarHook implements IXposedHookLoadPackage {
                     XposedHelpers.setAdditionalInstanceField(blurView, "nb_genui_blur_applied", Boolean.FALSE);
                     XposedHelpers.setAdditionalInstanceField(blurView, "nb_restoring_blur", Boolean.TRUE);
                     try {
+                        restoreGradientIfNeeded(blurView);
                         blurView.setBackground(null);
                         Object styleBox = XposedHelpers.getAdditionalInstanceField(blurView, "nb_genui_stylebox");
                         Object baseStyle = XposedHelpers.getAdditionalInstanceField(blurView, "nb_genui_style");
@@ -1023,6 +1138,7 @@ public class NowBarHook implements IXposedHookLoadPackage {
                 Object applied = XposedHelpers.getAdditionalInstanceField(glView, "nb_genui_gl_applied");
                 if (Boolean.TRUE.equals(applied)) {
                     XposedHelpers.setAdditionalInstanceField(glView, "nb_genui_gl_applied", Boolean.FALSE);
+                    restoreGradientIfNeeded(glView);
                     glView.setBackground(null);
                     clearBlurInfo(glView);
                 }
@@ -1042,48 +1158,43 @@ public class NowBarHook implements IXposedHookLoadPackage {
     }
 
     private static String collectCardText(View view) {
-        if (view == null) return "";
-        StringBuilder sb = new StringBuilder();
+        StringBuilder out = new StringBuilder();
+        appendCardText(view, out);
+        return out.toString();
+    }
+
+    private static void appendCardText(View view, StringBuilder out) {
         if (view instanceof TextView) {
-            CharSequence txt = ((TextView) view).getText();
-            if (txt != null && txt.length() > 0) {
-                sb.append(txt).append(" ");
-            }
+            CharSequence text = ((TextView) view).getText();
+            if (text != null && text.length() > 0) out.append(text).append(' ');
         }
         if (view instanceof ViewGroup) {
-            ViewGroup vg = (ViewGroup) view;
-            int count = Math.min(vg.getChildCount(), 15);
-            for (int i = 0; i < count; i++) {
-                sb.append(collectCardText(vg.getChildAt(i)));
-            }
+            ViewGroup group = (ViewGroup) view;
+            int count = Math.min(group.getChildCount(), 15);
+            for (int i = 0; i < count; i++) appendCardText(group.getChildAt(i), out);
         }
-        return sb.toString();
     }
 
-    private static String extractPackageFromNotiId(String notiId) {
-        if (notiId == null || notiId.isEmpty()) return "";
-        String[] parts = notiId.split("\\|");
-        if (parts.length > 1) return parts[1].toLowerCase().trim();
-        return "";
+    private static String notificationPart(String id, int index) {
+        if (id == null) return "";
+        int start = 0;
+        for (int i = 0; i < index; i++) {
+            int separator = id.indexOf('|', start);
+            if (separator < 0) return "";
+            start = separator + 1;
+        }
+        int end = id.indexOf('|', start);
+        return id.substring(start, end < 0 ? id.length() : end).toLowerCase(Locale.ROOT).trim();
     }
 
-    private static String extractIdFromNotiId(String notiId) {
-        if (notiId == null || notiId.isEmpty()) return "";
-        String[] parts = notiId.split("\\|");
-        if (parts.length > 2) return parts[2].toLowerCase().trim();
-        return "";
-    }
-
-    private static String extractTagFromNotiId(String notiId) {
-        if (notiId == null || notiId.isEmpty()) return "";
-        String[] parts = notiId.split("\\|");
-        if (parts.length > 3) return parts[3].toLowerCase().trim();
-        return "";
-    }
+    private static String extractPackageFromNotiId(String id) { return notificationPart(id, 1); }
+    private static String extractIdFromNotiId(String id) { return notificationPart(id, 2); }
+    private static String extractTagFromNotiId(String id) { return notificationPart(id, 3); }
 
     private static String resolveCategoryForCard(View card) {
         if (card == null) return ConfigManager.CAT_OTHER_ONGOING;
         String clsName = card.getClass().getName();
+        if (clsName.endsWith("NowBarMediaCardView")) return ConfigManager.CAT_MEDIA;
         Object item = getObjectFieldOrGetter(card, "g0", "getItem");
         if (item == null) {
             item = XposedHelpers.getAdditionalInstanceField(card, "nb_cached_item");
@@ -1105,7 +1216,7 @@ public class NowBarHook implements IXposedHookLoadPackage {
 
         if (item != null) {
             Object pkgObj = callMethodNoArgs(item, "getNowBarPackage");
-            if (pkgObj instanceof String) pkg = ((String) pkgObj).toLowerCase().trim();
+            if (pkgObj instanceof String) pkg = ((String) pkgObj).toLowerCase(Locale.ROOT).trim();
 
             Object notiIdObj = callMethodNoArgs(item, "getNotiID");
             if (notiIdObj instanceof String) {
@@ -1116,25 +1227,25 @@ public class NowBarHook implements IXposedHookLoadPackage {
             }
 
             Object keyObj = callMethodNoArgs(item, "getNowBarKey");
-            if (keyObj instanceof String) nowBarKey = ((String) keyObj).toLowerCase().trim();
+            if (keyObj instanceof String) nowBarKey = ((String) keyObj).toLowerCase(Locale.ROOT).trim();
 
             Object pInfoObj = callMethodNoArgs(item, "getPrimaryInfo");
-            if (pInfoObj instanceof String) primaryInfo = ((String) pInfoObj).toLowerCase().trim();
+            if (pInfoObj instanceof String) primaryInfo = ((String) pInfoObj).toLowerCase(Locale.ROOT).trim();
 
             Object sInfoObj = callMethodNoArgs(item, "getSecondaryInfo");
-            if (sInfoObj instanceof String) secondaryInfo = ((String) sInfoObj).toLowerCase().trim();
+            if (sInfoObj instanceof String) secondaryInfo = ((String) sInfoObj).toLowerCase(Locale.ROOT).trim();
 
             Object npInfoObj = callMethodNoArgs(item, "getNowbarPrimaryInfo");
-            if (npInfoObj instanceof String) nowbarPrimaryInfo = ((String) npInfoObj).toLowerCase().trim();
+            if (npInfoObj instanceof String) nowbarPrimaryInfo = ((String) npInfoObj).toLowerCase(Locale.ROOT).trim();
 
             Object nsInfoObj = callMethodNoArgs(item, "getNowbarSecondaryInfo");
-            if (nsInfoObj instanceof String) nowbarSecondaryInfo = ((String) nsInfoObj).toLowerCase().trim();
+            if (nsInfoObj instanceof String) nowbarSecondaryInfo = ((String) nsInfoObj).toLowerCase(Locale.ROOT).trim();
 
             Object extraDataObj = callMethodNoArgs(item, "getExtraData");
             if (extraDataObj instanceof android.os.Bundle) {
                 android.os.Bundle b = (android.os.Bundle) extraDataObj;
                 String ap = b.getString("nowbar_key_actual_package_name");
-                if (ap != null) actualPkg = ap.toLowerCase().trim();
+                if (ap != null) actualPkg = ap.toLowerCase(Locale.ROOT).trim();
                 int callType = b.getInt("nowbar_key_call_type", 0);
                 if (callType == 1 || callType == 2) isCall = true;
             }
@@ -1146,7 +1257,7 @@ public class NowBarHook implements IXposedHookLoadPackage {
             if (callObj instanceof Boolean && (Boolean) callObj) isCall = true;
         }
 
-        String cardText = collectCardText(card).toLowerCase();
+        String cardText = collectCardText(card).toLowerCase(Locale.ROOT);
         String allMeta = (pkg + " " + notiId + " " + notiPkg + " " + notiTag + " " + actualPkg + " "
                 + nowBarKey + " " + primaryInfo + " " + secondaryInfo + " "
                 + nowbarPrimaryInfo + " " + nowbarSecondaryInfo + " " + cardText).trim();
@@ -1230,9 +1341,6 @@ public class NowBarHook implements IXposedHookLoadPackage {
             category = ConfigManager.CAT_OTHER_ONGOING;
         }
 
-        XposedBridge.log(TAG + ": Card " + clsName.substring(clsName.lastIndexOf('.') + 1)
-                + " -> [" + category + "] (pkg=" + notiPkg + ", tag=" + notiTag + ", app=" + pkg
-                + ", actualPkg=" + actualPkg + ", style=" + viewStyle + ")");
         return category;
     }
 
@@ -1240,6 +1348,10 @@ public class NowBarHook implements IXposedHookLoadPackage {
         if (card == null) return;
         try {
             ConfigManager.Config cfg = sConfig;
+            if (cfg == null || !cfg.masterEnabled || !isCollapsedLockscreenCapsule(card)) {
+                restoreOriginalCardBackgroundIfNeeded(card);
+                return;
+            }
             String categoryId = resolveCategoryForCard(card);
             ConfigManager.CategoryConfig catCfg = cfg != null ? cfg.getCategory(categoryId) : null;
 
@@ -1291,7 +1403,7 @@ public class NowBarHook implements IXposedHookLoadPackage {
             w1.setAlpha(0.0f);
         }
 
-        if (p1 != null && p1.getVisibility() == View.VISIBLE) {
+        if (p1 != null && p1.getVisibility() == View.VISIBLE && p1.getAlpha() > 0f) {
             if (Build.VERSION.SDK_INT >= 23) {
                 p1.setForeground(null);
             }
@@ -1539,157 +1651,32 @@ public class NowBarHook implements IXposedHookLoadPackage {
         }
     }
 
-    /** Paints a two-stop LEFT→RIGHT gradient as the view background, saving the original drawable. */
-    private static void setCardViewGradientAndStyle(View view, int startArgb, int endArgb, boolean useBlur, float radius) {
-        if (view == null) return;
-        try {
-            Object applied = XposedHelpers.getAdditionalInstanceField(view, "nb_grad_applied");
-            if (!Boolean.TRUE.equals(applied)) {
-                XposedHelpers.setAdditionalInstanceField(view, "nb_orig_bg", view.getBackground());
-            }
-            try {
-                Method m = view.getClass().getMethod("setCardBackgroundColor", int.class);
-                m.invoke(view, Color.TRANSPARENT);
-            } catch (Throwable ignored) {}
-
-            GradientDrawable gd = new GradientDrawable(GradientDrawable.Orientation.LEFT_RIGHT,
-                    new int[]{startArgb, endArgb});
-            gd.setCornerRadius(radius > 0f ? radius : 100f);
-            view.setBackground(gd);
-            view.setClipToOutline(true);
-            XposedHelpers.setAdditionalInstanceField(view, "nb_grad_applied", Boolean.TRUE);
-
-            if (useBlur) {
-                applyBlurInfoNoFallback(view, radius, Color.TRANSPARENT);
-            } else {
-                clearBlurInfo(view);
-            }
-        } catch (Throwable t) {
-            XposedBridge.log(TAG + ": setCardViewGradientAndStyle error: " + t.getMessage());
-        }
+    private static void setCardViewGradientAndStyle(View view, int start, int end, boolean blur, float radius) {
+        CapsuleStyle.gradient(view, start, end, radius);
+        if (blur) CapsuleStyle.blur(view, radius, Color.TRANSPARENT);
+        else clearBlurInfo(view);
     }
 
-    /** Restores the original (CardView) background drawable if a gradient was installed. */
-    private static void restoreGradientIfNeeded(View view) {
-        if (view == null) return;
-        try {
-            Object applied = XposedHelpers.getAdditionalInstanceField(view, "nb_grad_applied");
-            if (Boolean.TRUE.equals(applied)) {
-                Object orig = XposedHelpers.getAdditionalInstanceField(view, "nb_orig_bg");
-                view.setBackground(orig instanceof android.graphics.drawable.Drawable
-                        ? (android.graphics.drawable.Drawable) orig : null);
-                XposedHelpers.setAdditionalInstanceField(view, "nb_grad_applied", Boolean.FALSE);
-                XposedHelpers.setAdditionalInstanceField(view, "nb_orig_bg", null);
-            }
-        } catch (Throwable ignored) {}
-    }
-
-    private static void applyBlurInfoNoFallback(View view, float cornerRadius, int argbColor) {
-        if (view == null) return;
-        try {
-            Class<?> builderCls = Class.forName("android.view.SemBlurInfo$Builder");
-            Constructor<?> ctor = builderCls.getConstructor(int.class);
-            Object builder = ctor.newInstance(0); // BLUR_MODE_WINDOW = 0
-            try {
-                Method setPreset = builderCls.getMethod("setColorCurvePreset", int.class);
-                setPreset.invoke(builder, 54);
-            } catch (Throwable ignored) {}
-            try {
-                Method setCorner = builderCls.getMethod("setBackgroundCornerRadius", float.class);
-                setCorner.invoke(builder, cornerRadius);
-            } catch (Throwable ignored) {}
-            try {
-                Method setBgColor = builderCls.getMethod("setBackgroundColor", int.class);
-                setBgColor.invoke(builder, argbColor);
-            } catch (Throwable ignored) {}
-            Object blurInfo = builderCls.getMethod("build").invoke(builder);
-            Class<?> blurInfoCls = Class.forName("android.view.SemBlurInfo");
-            View.class.getMethod("semSetBlurInfo", blurInfoCls).invoke(view, blurInfo);
-        } catch (Throwable ignored) {}
-    }
+    private static void restoreGradientIfNeeded(View view) { CapsuleStyle.restoreGradient(view); }
 
     private static void setCardBackgroundColor(View view, int color) {
         setCardBackgroundColor(view, color, 100f);
     }
 
-    private static void setCardBackgroundColor(View view, int color, float radiusPx) {
-        if (view == null) return;
-        restoreGradientIfNeeded(view);
-        try {
-            Method m = view.getClass().getMethod("setCardBackgroundColor", int.class);
-            m.invoke(view, color);
-            return;
-        } catch (Throwable ignored) {}
-        try {
-            if (color == Color.TRANSPARENT) {
-                view.setBackground(null);
-                return;
-            }
-            GradientDrawable gd = new GradientDrawable();
-            gd.setColor(color);
-            gd.setCornerRadius(radiusPx > 0f ? radiusPx : 100f);
-            view.setBackground(gd);
-            view.setClipToOutline(true);
-        } catch (Throwable ignored) {}
+    private static void setCardBackgroundColor(View view, int color, float radius) {
+        CapsuleStyle.solid(view, color, radius);
     }
 
-    private static void clearBlurInfo(View view) {
-        if (view == null) return;
-        try {
-            Class<?> blurInfoCls = Class.forName("android.view.SemBlurInfo");
-            Method semSetBlur = View.class.getMethod("semSetBlurInfo", blurInfoCls);
-            semSetBlur.invoke(view, new Object[]{null});
-        } catch (Throwable ignored) {}
-    }
+    private static void clearBlurInfo(View view) { CapsuleStyle.clearBlur(view); }
 
-    private static void applyBlurInfo(View view, float cornerRadius, int argbColor) {
-        if (view == null) return;
-        try {
-            Class<?> builderCls = Class.forName("android.view.SemBlurInfo$Builder");
-            Constructor<?> ctor = builderCls.getConstructor(int.class);
-            Object builder = ctor.newInstance(0); // BLUR_MODE_WINDOW = 0
-
-            try {
-                Method setPreset = builderCls.getMethod("setColorCurvePreset", int.class);
-                setPreset.invoke(builder, 54);
-            } catch (Throwable ignored) {}
-
-            try {
-                Method setCorner = builderCls.getMethod("setBackgroundCornerRadius", float.class);
-                setCorner.invoke(builder, cornerRadius);
-            } catch (Throwable ignored) {}
-
-            try {
-                Method setBgColor = builderCls.getMethod("setBackgroundColor", int.class);
-                setBgColor.invoke(builder, argbColor);
-            } catch (Throwable ignored) {}
-
-            Method buildMethod = builderCls.getMethod("build");
-            Object blurInfo = buildMethod.invoke(builder);
-
-            Class<?> blurInfoCls = Class.forName("android.view.SemBlurInfo");
-            Method semSetBlur = View.class.getMethod("semSetBlurInfo", blurInfoCls);
-            semSetBlur.invoke(view, blurInfo);
-        } catch (Throwable t) {
-            // Fallback if SemBlurInfo reflection fails
-            setCardBackgroundColor(view, argbColor, cornerRadius);
-        }
+    private static void applyBlurInfo(View view, float radius, int color) {
+        if (!CapsuleStyle.blur(view, radius, color)) setCardBackgroundColor(view, color, radius);
     }
 
     // --- Reflection Helpers searching class hierarchy ---
 
     private static Field findFieldHierarchy(Class<?> cls, String name) {
-        Class<?> curr = cls;
-        while (curr != null && curr != Object.class) {
-            try {
-                Field f = curr.getDeclaredField(name);
-                f.setAccessible(true);
-                return f;
-            } catch (NoSuchFieldException ignored) {
-                curr = curr.getSuperclass();
-            }
-        }
-        return null;
+        return ReflectionCache.field(cls, name);
     }
 
     private static Object getFieldValue(Object obj, String fieldName) {
@@ -1704,9 +1691,8 @@ public class NowBarHook implements IXposedHookLoadPackage {
     private static Object callMethodNoArgs(Object obj, String methodName) {
         if (obj == null) return null;
         try {
-            Method m = obj.getClass().getMethod(methodName);
-            m.setAccessible(true);
-            return m.invoke(obj);
+            Method m = ReflectionCache.method(obj.getClass(), methodName);
+            return m == null ? null : m.invoke(obj, NO_ARGUMENTS);
         } catch (Throwable ignored) {}
         return null;
     }

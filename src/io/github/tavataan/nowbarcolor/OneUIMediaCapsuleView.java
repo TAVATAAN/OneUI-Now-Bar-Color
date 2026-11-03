@@ -98,6 +98,7 @@ public class OneUIMediaCapsuleView extends View {
     private static final float ANGULAR_VELOCITY = -9.0f; // jm4.g = -9.0 rad/sec
 
     // Paints
+    private final Paint mNotePaint = new Paint(Paint.ANTI_ALIAS_FLAG);
     private final Paint mBgPaint = new Paint(Paint.ANTI_ALIAS_FLAG);
     private final Paint mStrokePaint = new Paint(Paint.ANTI_ALIAS_FLAG);
     private final Paint mBevelPaint = new Paint(Paint.ANTI_ALIAS_FLAG);
@@ -402,7 +403,7 @@ public class OneUIMediaCapsuleView extends View {
             mAlbumPaint.setShader(null);
             mAlbumPaint.setColor(0xFF263238);
             canvas.drawCircle(albumCenterX, albumCenterY, albumRadius, mAlbumPaint);
-            Paint noteP = new Paint(Paint.ANTI_ALIAS_FLAG);
+            Paint noteP = mNotePaint;
             noteP.setColor(0xFFFFFFFF);
             noteP.setTextSize(sp(20));
             noteP.setTextAlign(Paint.Align.CENTER);
