@@ -151,6 +151,15 @@ build/NowBarColor.apk
 
 ---
 
+## Feedback, Bug Reports & Support
+
+If you encounter any bugs, have feature suggestions, or need help with setup, you can reach out through the Telegram group or open an issue on GitHub:
+
+- Telegram Community: [https://t.me/tavadump](https://t.me/tavadump)
+- GitHub Issues: Report issues or submit pull requests directly on the repository tracker.
+
+---
+
 ## License
 
 This project is licensed under the **MIT License**. See the [LICENSE](LICENSE) file for details.
@@ -159,4 +168,5 @@ This project is licensed under the **MIT License**. See the [LICENSE](LICENSE) f
 
 ## Author
 
-Developed by **tavataan**.
+Developed by **tavataan** ([Telegram: @tavadump](https://t.me/tavadump)).
+
