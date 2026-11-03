@@ -1,4 +1,4 @@
-package com.tavataan.nowbarcolor;
+package io.github.tavataan.nowbarcolor;
 
 import android.content.Context;
 import android.graphics.Canvas;

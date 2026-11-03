@@ -1,4 +1,4 @@
-package com.tavataan.nowbarcolor;
+package io.github.tavataan.nowbarcolor;
 
 import android.content.ContentProvider;
 import android.content.ContentValues;
@@ -10,7 +10,7 @@ import android.net.Uri;
 import android.os.Bundle;
 
 public class NowBarConfigProvider extends ContentProvider {
-    public static final String AUTHORITY = "com.tavataan.nowbarcolor.provider";
+    public static final String AUTHORITY = "io.github.tavataan.nowbarcolor.provider";
     public static final Uri CONTENT_URI = Uri.parse("content://" + AUTHORITY + "/config");
 
     @Override
@@ -53,7 +53,7 @@ public class NowBarConfigProvider extends ContentProvider {
 
     @Override
     public String getType(Uri uri) {
-        return "vnd.android.cursor.item/vnd.com.tavataan.nowbarcolor.config";
+        return "vnd.android.cursor.item/vnd.io.github.tavataan.nowbarcolor.config";
     }
 
     @Override

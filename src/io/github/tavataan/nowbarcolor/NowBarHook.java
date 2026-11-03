@@ -1,4 +1,4 @@
-package com.tavataan.nowbarcolor;
+package io.github.tavataan.nowbarcolor;
 
 import android.app.WallpaperColors;
 import android.app.WallpaperManager;
@@ -61,7 +61,7 @@ public class NowBarHook implements IXposedHookLoadPackage {
 
     @Override
     public void handleLoadPackage(final XC_LoadPackage.LoadPackageParam lpparam) throws Throwable {
-        if ("com.tavataan.nowbarcolor".equals(lpparam.packageName)) {
+        if ("io.github.tavataan.nowbarcolor".equals(lpparam.packageName)) {
             hookSelfModuleStatus(lpparam.classLoader);
             return;
         }
@@ -124,7 +124,7 @@ public class NowBarHook implements IXposedHookLoadPackage {
 
     private void hookSelfModuleStatus(ClassLoader cl) {
         try {
-            Class<?> mainAct = XposedHelpers.findClassIfExists("com.tavataan.nowbarcolor.MainActivity", cl);
+            Class<?> mainAct = XposedHelpers.findClassIfExists("io.github.tavataan.nowbarcolor.MainActivity", cl);
             if (mainAct != null) {
                 XposedHelpers.findAndHookMethod(mainAct, "isModuleActiveInLsposed", new XC_MethodHook() {
                     @Override

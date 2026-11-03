@@ -1,4 +1,4 @@
-package com.tavataan.nowbarcolor;
+package io.github.tavataan.nowbarcolor;
 
 import android.app.Activity;
 import android.app.AlertDialog;

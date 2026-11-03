@@ -24,9 +24,9 @@ It features a companion configuration app built with a native One UI interface, 
 Examples showing how custom colors blend dynamically with various lock screen wallpapers and categories:
 
 <p align="center">
-  <img src="assets/screenshots/preview_1.jpg" width="32%" alt="Now Bar Customization Example 1" />
-  <img src="assets/screenshots/preview_2.jpg" width="32%" alt="Now Bar Customization Example 2" />
-  <img src="assets/screenshots/preview_3.jpg" width="32%" alt="Now Bar Customization Example 3" />
+  <img src="docs/screenshots/preview_1.jpg" width="32%" alt="Now Bar Customization Example 1" />
+  <img src="docs/screenshots/preview_2.jpg" width="32%" alt="Now Bar Customization Example 2" />
+  <img src="docs/screenshots/preview_3.jpg" width="32%" alt="Now Bar Customization Example 3" />
 </p>
 
 ---
@@ -133,12 +133,12 @@ build/NowBarColor.apk
 
 ```
 ├── AndroidManifest.xml          # Package definition, permissions, and LSPosed metadata
-├── assets/                      # Module bootstrap (xposed_init), assets, and screenshot previews
-│   └── screenshots/             # Collage preview images
+├── assets/                      # Module bootstrap (xposed_init) and assets
 ├── compatibility/               # Stabilization APK and guide for One UI 8.x users
+├── docs/screenshots/            # Collage preview images
 ├── meta_xposed/                 # LSPosed repository metadata (module.prop, scope.list)
 ├── res/                         # UI resources (layouts, strings, launcher icons, themes)
-├── src/com/tavataan/nowbarcolor/
+├── src/io/github/tavataan/nowbarcolor/
 │   ├── MainActivity.java        # One UI settings activity with Live Preview & HSV Pickers
 │   ├── NowBarHook.java          # Core LSPosed hooking engine for SystemUI & FaceWidget/AOD
 │   ├── ConfigManager.java       # Configuration persistence and per-category data models

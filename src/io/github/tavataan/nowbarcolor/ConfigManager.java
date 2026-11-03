@@ -1,4 +1,4 @@
-package com.tavataan.nowbarcolor;
+package io.github.tavataan.nowbarcolor;
 
 import android.content.Context;
 import android.content.Intent;
@@ -21,7 +21,7 @@ public class ConfigManager {
     public static final String TAG = "NowBarColor";
     public static final String PREFS_NAME = "nowbar_color_prefs";
     public static final String SETTINGS_KEY = "nowbar_color_config_json";
-    public static final String ACTION_CONFIG_UPDATED = "com.tavataan.nowbarcolor.ACTION_CONFIG_UPDATED";
+    public static final String ACTION_CONFIG_UPDATED = "io.github.tavataan.nowbarcolor.ACTION_CONFIG_UPDATED";
 
     public static final int MODE_FIXED_COLOR = 0;
     public static final int MODE_LOCK_WALLPAPER = 1;
