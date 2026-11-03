@@ -1,5 +1,5 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
     <string name="app_name">Now Bar Color</string>
-    <string name="module_desc">Personaliza el color de fondo de la cápsula Now Bar contraída en la pantalla de bloqueo (Paleta fija, Color del Fondo de Bloqueo, Sólido o Blur) sin alterar fotos, iconos ni textos.</string>
+    <string name="module_desc">Customize the background color of the collapsed Now Bar capsule on the lock screen (Fixed palette, Wallpaper color, Solid or Blur) without altering photos, icons, or text.</string>
 </resources>

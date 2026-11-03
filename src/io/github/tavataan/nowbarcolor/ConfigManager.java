@@ -62,6 +62,16 @@ public class ConfigManager {
             this.badgeText = badgeText;
             this.accentColor = accentColor;
         }
+
+        public String getTitle(Context ctx) {
+            if (ctx == null) return this.title;
+            return I18n.get(ctx, "cat_" + id + "_title");
+        }
+
+        public String getSubtitle(Context ctx) {
+            if (ctx == null) return this.subtitle;
+            return I18n.get(ctx, "cat_" + id + "_desc");
+        }
     }
 
     public static final List<CategoryMeta> ALL_CATEGORIES = new ArrayList<>();

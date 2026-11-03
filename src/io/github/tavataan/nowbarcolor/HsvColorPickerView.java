@@ -98,7 +98,7 @@ public class HsvColorPickerView extends LinearLayout {
 
         // Left Pill: "Current color"
         mPillCurrentColor = new TextView(context);
-        mPillCurrentColor.setText("Current color");
+        mPillCurrentColor.setText(I18n.get(context, "picker_current_color"));
         mPillCurrentColor.setTextColor(Color.WHITE);
         mPillCurrentColor.setTextSize(TypedValue.COMPLEX_UNIT_SP, 13);
         mPillCurrentColor.setTypeface(Typeface.DEFAULT_BOLD);
@@ -133,7 +133,7 @@ public class HsvColorPickerView extends LinearLayout {
         // 3. PIE (Saturation Slider)
         // ==========================================
         TextView satLabel = new TextView(context);
-        satLabel.setText("Saturation");
+        satLabel.setText(I18n.get(context, "picker_saturation"));
         satLabel.setTextColor(0xFFD6DCE8);
         satLabel.setTextSize(TypedValue.COMPLEX_UNIT_SP, 13);
         satLabel.setTypeface(Typeface.DEFAULT_BOLD);
@@ -178,7 +178,7 @@ public class HsvColorPickerView extends LinearLayout {
         opSecLp.topMargin = dp(14);
 
         mOpacityLabel = new TextView(context);
-        mOpacityLabel.setText("Opacidad: " + mOpacity + "%");
+        mOpacityLabel.setText(I18n.get(context, "picker_opacity") + mOpacity + "%");
         mOpacityLabel.setTextColor(0xFFD6DCE8);
         mOpacityLabel.setTextSize(TypedValue.COMPLEX_UNIT_SP, 13);
         mOpacityLabel.setTypeface(Typeface.DEFAULT_BOLD);
@@ -199,7 +199,7 @@ public class HsvColorPickerView extends LinearLayout {
             public void onOpacityChanged(float opacity) {
                 mOpacity = Math.round(opacity * 100f);
                 if (mOpacityLabel != null) {
-                    mOpacityLabel.setText("Opacidad: " + mOpacity + "%");
+                    mOpacityLabel.setText(I18n.get(getContext(), "picker_opacity") + mOpacity + "%");
                 }
                 updateHeaderAndNotify();
             }
@@ -227,7 +227,7 @@ public class HsvColorPickerView extends LinearLayout {
             mOpacitySlider.setOpacity(this.mOpacity / 100f);
         }
         if (mOpacityLabel != null) {
-            mOpacityLabel.setText("Opacidad: " + this.mOpacity + "%");
+            mOpacityLabel.setText(I18n.get(getContext(), "picker_opacity") + this.mOpacity + "%");
         }
     }
 

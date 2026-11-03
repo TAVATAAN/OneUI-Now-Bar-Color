@@ -38,6 +38,7 @@ import android.widget.Toast;
 
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Locale;
 
 public class MainActivity extends Activity {
 
@@ -102,6 +103,55 @@ public class MainActivity extends Activity {
     private LinearLayout mCategoriesListContainer;
     private String mExpandedCategoryId = null;
 
+    private LinearLayout mMainCol;
+
+    private void showLanguageSelectionDialog() {
+        final String[] langCodes = new String[]{
+                I18n.LANG_AUTO,
+                I18n.LANG_EN,
+                I18n.LANG_ES,
+                I18n.LANG_PT
+        };
+        final String[] langNames = new String[]{
+                I18n.get(this, "lang_auto"),
+                I18n.get(this, "lang_en"),
+                I18n.get(this, "lang_es"),
+                I18n.get(this, "lang_pt")
+        };
+        String current = I18n.getLanguage(this);
+        int checkedItem = 0;
+        for (int i = 0; i < langCodes.length; i++) {
+            if (langCodes[i].equals(current)) {
+                checkedItem = i;
+                break;
+            }
+        }
+        new AlertDialog.Builder(this, android.R.style.Theme_DeviceDefault_Dialog_Alert)
+                .setTitle(I18n.get(this, "select_lang_title"))
+                .setSingleChoiceItems(langNames, checkedItem, new DialogInterface.OnClickListener() {
+                    @Override
+                    public void onClick(DialogInterface dialog, int which) {
+                        I18n.setLanguage(MainActivity.this, langCodes[which]);
+                        dialog.dismiss();
+                        rebuildFullUi();
+                    }
+                })
+                .setNegativeButton(I18n.get(this, "cancel"), null)
+                .show();
+    }
+
+    private void rebuildFullUi() {
+        if (mMainCol == null) return;
+        mMainCol.removeAllViews();
+        mMainCol.addView(buildHeaderSection());
+        mMainCol.addView(buildMasterSwitchCard());
+        mMainCol.addView(buildLivePreviewCard());
+        mMainCol.addView(buildColorSelectionCard());
+        mMainCol.addView(buildStyleAndOpacityCard());
+        mMainCol.addView(buildCategoriesCatalogCard());
+        refreshEntireUi(false);
+    }
+
     private static class CategoryRowHolder {
         String categoryId;
         LinearLayout rootCard;
@@ -132,29 +182,29 @@ public class MainActivity extends Activity {
         rootScroll.setFillViewport(true);
         rootScroll.setBackgroundColor(0xFF000000);
 
-        LinearLayout mainCol = new LinearLayout(this);
-        mainCol.setOrientation(LinearLayout.VERTICAL);
+        mMainCol = new LinearLayout(this);
+        mMainCol.setOrientation(LinearLayout.VERTICAL);
         int padH = dp(18);
-        mainCol.setPadding(padH, dp(16), padH, dp(36));
-        rootScroll.addView(mainCol);
+        mMainCol.setPadding(padH, dp(16), padH, dp(36));
+        rootScroll.addView(mMainCol);
 
         // 1. Header + Status Pill
-        mainCol.addView(buildHeaderSection());
+        mMainCol.addView(buildHeaderSection());
 
         // 2. Master Enable Switch Card (Activador del módulo arriba)
-        mainCol.addView(buildMasterSwitchCard());
+        mMainCol.addView(buildMasterSwitchCard());
 
         // 3. Live Preview Card (Vista previa abajo)
-        mainCol.addView(buildLivePreviewCard());
+        mMainCol.addView(buildLivePreviewCard());
 
         // 4. Color Source Selector (Wide Palette + Lockscreen Wallpaper Button side-by-side)
-        mainCol.addView(buildColorSelectionCard());
+        mMainCol.addView(buildColorSelectionCard());
 
         // 5. Visual Style (Solid vs Blur) + Opacity Slider
-        mainCol.addView(buildStyleAndOpacityCard());
+        mMainCol.addView(buildStyleAndOpacityCard());
 
         // 6. Catalog of All 9 Now Bar Capsule Types (Individual Toggles + Per-Capsule Color Override)
-        mainCol.addView(buildCategoriesCatalogCard());
+        mMainCol.addView(buildCategoriesCatalogCard());
 
         setContentView(rootScroll);
         refreshEntireUi(true);
@@ -229,16 +279,48 @@ public class MainActivity extends Activity {
         topRow.setGravity(Gravity.CENTER_VERTICAL);
 
         TextView title = new TextView(this);
-        title.setText("Now Bar Color");
+        title.setText(I18n.get(this, "app_title"));
         title.setTextColor(0xFFFFFFFF);
         title.setTextSize(TypedValue.COMPLEX_UNIT_SP, 26);
         title.setTypeface(Typeface.create("sans-serif-medium", Typeface.BOLD));
         LinearLayout.LayoutParams titleLp = new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f);
         topRow.addView(title, titleLp);
 
+        TextView langBtn = new TextView(this);
+        String curPref = I18n.getLanguage(this);
+        String langDisplay;
+        if (I18n.LANG_AUTO.equals(curPref)) {
+            langDisplay = "Auto (" + I18n.getEffectiveLanguage(this).toUpperCase(Locale.ROOT) + ")";
+        } else {
+            langDisplay = curPref.toUpperCase(Locale.ROOT);
+        }
+        langBtn.setText(langDisplay);
+        langBtn.setTextColor(0xFFFFFFFF);
+        langBtn.setTextSize(TypedValue.COMPLEX_UNIT_SP, 11.5f);
+        langBtn.setTypeface(Typeface.DEFAULT_BOLD);
+        langBtn.setPadding(dp(10), dp(6), dp(10), dp(6));
+        langBtn.setBackground(roundRect(0x22FFFFFF, dp(18), 1, 0x44FFFFFF));
+        LinearLayout.LayoutParams langLp = new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT);
+        langLp.rightMargin = dp(8);
+        langBtn.setOnClickListener(new View.OnClickListener() {
+            @Override
+            public void onClick(View v) {
+                showLanguageSelectionDialog();
+            }
+        });
+        topRow.addView(langBtn, langLp);
+
         boolean active = isModuleActiveInLsposed();
+        String effLang = I18n.getEffectiveLanguage(this);
+        String badgeText;
+        if (active) {
+            badgeText = "es".equals(effLang) ? "● LSPosed Activo" : ("pt".equals(effLang) ? "● LSPosed Ativo" : "● LSPosed Active");
+        } else {
+            badgeText = "es".equals(effLang) ? "● Sincronización Root Activa" : ("pt".equals(effLang) ? "● Sincronização Root Ativa" : "● Root Sync Active");
+        }
         TextView badge = new TextView(this);
-        badge.setText(active ? "● LSPosed Activo" : "● Sincronización Root Activa");
+        badge.setText(badgeText);
         badge.setTextColor(active ? 0xFF69F0AE : 0xFF82B1FF);
         badge.setTextSize(TypedValue.COMPLEX_UNIT_SP, 11.5f);
         badge.setTypeface(Typeface.DEFAULT_BOLD);
@@ -249,7 +331,7 @@ public class MainActivity extends Activity {
         box.addView(topRow);
 
         TextView sub = new TextView(this);
-        sub.setText("Personaliza únicamente el fondo de la cápsula Now Bar contraída en la pantalla de bloqueo sin alterar fotos, iconos ni textos.");
+        sub.setText(I18n.get(this, "app_subtitle"));
         sub.setTextColor(0xFF9AA0B4);
         sub.setTextSize(TypedValue.COMPLEX_UNIT_SP, 13);
         sub.setPadding(0, dp(6), 0, 0);
@@ -267,7 +349,7 @@ public class MainActivity extends Activity {
         headerRow.setGravity(Gravity.CENTER_VERTICAL);
 
         TextView lbl = new TextView(this);
-        lbl.setText("VISTA PREVIA EN TIEMPO REAL (NOW BAR MULTIMEDIA)");
+        lbl.setText(I18n.get(this, "preview_title"));
         lbl.setTextColor(0xFF82B1FF);
         lbl.setTextSize(TypedValue.COMPLEX_UNIT_SP, 11);
         lbl.setTypeface(Typeface.DEFAULT_BOLD);
@@ -330,14 +412,14 @@ public class MainActivity extends Activity {
         textCol.setOrientation(LinearLayout.VERTICAL);
 
         TextView t = new TextView(this);
-        t.setText("Activar personalización de Now Bar");
+        t.setText(I18n.get(this, "enable_title"));
         t.setTextColor(0xFFFFFFFF);
         t.setTextSize(TypedValue.COMPLEX_UNIT_SP, 15.5f);
         t.setTypeface(Typeface.create("sans-serif-medium", Typeface.BOLD));
         textCol.addView(t);
 
         TextView s = new TextView(this);
-        s.setText("Aplica los cambios al instante en la pantalla de bloqueo sin reiniciar SystemUI");
+        s.setText(I18n.get(this, "enable_sub"));
         s.setTextColor(0xFF9AA0B4);
         s.setTextSize(TypedValue.COMPLEX_UNIT_SP, 12);
         textCol.addView(s);
@@ -362,7 +444,7 @@ public class MainActivity extends Activity {
         LinearLayout card = createSectionCard();
 
         TextView secTitle = new TextView(this);
-        secTitle.setText("MODO DE COLOR DEL FONDO DE LA CÁPSULA");
+        secTitle.setText(I18n.get(this, "sec_color_mode"));
         secTitle.setTextColor(0xFF82B1FF);
         secTitle.setTextSize(TypedValue.COMPLEX_UNIT_SP, 11);
         secTitle.setTypeface(Typeface.DEFAULT_BOLD);
@@ -378,7 +460,7 @@ public class MainActivity extends Activity {
 
         mBtnFixedMode = new Button(this);
         mBtnFixedMode.setAllCaps(false);
-        mBtnFixedMode.setText("🎨 Paleta Fija");
+        mBtnFixedMode.setText(I18n.get(this, "tab_solid"));
         mBtnFixedMode.setTextSize(TypedValue.COMPLEX_UNIT_SP, 12.5f);
         mBtnFixedMode.setOnClickListener(new View.OnClickListener() {
             @Override
@@ -392,7 +474,7 @@ public class MainActivity extends Activity {
 
         mBtnWallpaperMode = new Button(this);
         mBtnWallpaperMode.setAllCaps(false);
-        mBtnWallpaperMode.setText("🖼️ Fondo Bloqueo");
+        mBtnWallpaperMode.setText(I18n.get(this, "tab_wallpaper"));
         mBtnWallpaperMode.setTextSize(TypedValue.COMPLEX_UNIT_SP, 12f);
         mBtnWallpaperMode.setOnClickListener(new View.OnClickListener() {
             @Override
@@ -408,7 +490,7 @@ public class MainActivity extends Activity {
 
         mBtnGradientMode = new Button(this);
         mBtnGradientMode.setAllCaps(false);
-        mBtnGradientMode.setText("🌈 Degradado");
+        mBtnGradientMode.setText(I18n.get(this, "tab_gradient"));
         mBtnGradientMode.setTextSize(TypedValue.COMPLEX_UNIT_SP, 12.5f);
         mBtnGradientMode.setOnClickListener(new View.OnClickListener() {
             @Override
@@ -430,7 +512,7 @@ public class MainActivity extends Activity {
         mFixedPaletteContainer.setOrientation(LinearLayout.VERTICAL);
 
         TextView palLabel = new TextView(this);
-        palLabel.setText("Selecciona un color sólido de la paleta o crea uno a medida:");
+        palLabel.setText(I18n.get(this, "palette_label"));
         palLabel.setTextColor(0xFFB0B8C8);
         palLabel.setTextSize(TypedValue.COMPLEX_UNIT_SP, 12.5f);
         palLabel.setPadding(0, 0, 0, dp(10));
@@ -470,7 +552,7 @@ public class MainActivity extends Activity {
 
         Button btnCustomHex = new Button(this);
         btnCustomHex.setAllCaps(false);
-        btnCustomHex.setText("✨ Selector Avanzado (HSV 2D + HEX)");
+        btnCustomHex.setText(I18n.get(this, "picker_advanced"));
         btnCustomHex.setTextColor(0xFFFFFFFF);
         btnCustomHex.setTextSize(TypedValue.COMPLEX_UNIT_SP, 13);
         btnCustomHex.setBackground(roundRect(0xFF232325, dp(14), 1, 0xFF38383B));
@@ -481,7 +563,7 @@ public class MainActivity extends Activity {
             @Override
             public void onClick(View v) {
                 showCustomColorPickerDialog(
-                        "Color Global de Now Bar",
+                        I18n.get(MainActivity.this, "dialog_global_color"),
                         mConfig.globalColor,
                         new OnColorPickedListener() {
                             @Override
@@ -502,23 +584,23 @@ public class MainActivity extends Activity {
         mWallpaperModeContainer.setOrientation(LinearLayout.VERTICAL);
 
         TextView wallInfo = new TextView(this);
-        wallInfo.setText("El color de la cápsula se sincroniza automáticamente con tu fondo de pantalla de bloqueo actual:");
+        wallInfo.setText(I18n.get(this, "wall_info"));
         wallInfo.setTextColor(0xFFB0B8C8);
         wallInfo.setTextSize(TypedValue.COMPLEX_UNIT_SP, 12.5f);
         wallInfo.setPadding(0, 0, 0, dp(10));
         mWallpaperModeContainer.addView(wallInfo);
 
         String[] variantTitles = new String[]{
-                "Color Principal (Dominante) — Recomendado",
-                "Color Secundario del Fondo",
-                "Acento Dinámico Monet (One UI)",
-                "Zona Inferior (Área exacta de la Now Bar)"
+                I18n.get(this, "wall_primary_title"),
+                I18n.get(this, "wall_secondary_title"),
+                I18n.get(this, "wall_monet_title"),
+                I18n.get(this, "wall_bottom_title")
         };
         String[] variantSubs = new String[]{
-                "Tono principal extraído del fondo de pantalla de bloqueo",
-                "Tono complementario secundario del fondo de bloqueo",
-                "Paleta adaptativa del sistema basada en tu fondo",
-                "Color promedio de la región inferior donde se ubica la cápsula"
+                I18n.get(this, "wall_primary_desc"),
+                I18n.get(this, "wall_secondary_desc"),
+                I18n.get(this, "wall_monet_desc"),
+                I18n.get(this, "wall_bottom_desc")
         };
 
         mWallpaperVariantCards.clear();
@@ -571,7 +653,7 @@ public class MainActivity extends Activity {
 
         Button btnRefreshWall = new Button(this);
         btnRefreshWall.setAllCaps(false);
-        btnRefreshWall.setText("🔄 Re-escanear fondo de pantalla de bloqueo ahora");
+        btnRefreshWall.setText(I18n.get(this, "wall_refresh_btn"));
         btnRefreshWall.setTextColor(0xFFFFFFFF);
         btnRefreshWall.setTextSize(TypedValue.COMPLEX_UNIT_SP, 12.5f);
         btnRefreshWall.setBackground(roundRect(0xFF232325, dp(14), 1, 0xFF38383B));
@@ -581,7 +663,7 @@ public class MainActivity extends Activity {
                 mWallpaperPalette = WallpaperColorHelper.extractLockWallpaperPalette(MainActivity.this, true);
                 updateCachedWallpaperInConfig();
                 refreshEntireUi(true);
-                Toast.makeText(MainActivity.this, "Colores del fondo de bloqueo actualizados", Toast.LENGTH_SHORT).show();
+                Toast.makeText(MainActivity.this, I18n.get(MainActivity.this, "wall_updated_toast"), Toast.LENGTH_SHORT).show();
             }
         });
         mWallpaperModeContainer.addView(btnRefreshWall, new LinearLayout.LayoutParams(
@@ -594,7 +676,7 @@ public class MainActivity extends Activity {
         mGradientModeContainer.setOrientation(LinearLayout.VERTICAL);
 
         TextView gradInfo = new TextView(this);
-        gradInfo.setText("Degradado lineal horizontal de dos paradas (de izquierda a derecha):");
+        gradInfo.setText(I18n.get(this, "grad_info"));
         gradInfo.setTextColor(0xFFB0B8C8);
         gradInfo.setTextSize(TypedValue.COMPLEX_UNIT_SP, 12.5f);
         gradInfo.setPadding(0, 0, 0, dp(10));
@@ -613,7 +695,7 @@ public class MainActivity extends Activity {
         mDotGlobalGradStart = new View(this);
         mBtnGlobalGradStart.addView(mDotGlobalGradStart, new LinearLayout.LayoutParams(dp(16), dp(16)));
         TextView txtGradStart = new TextView(this);
-        txtGradStart.setText(" Primer color");
+        txtGradStart.setText(" " + I18n.get(this, "grad_color_start"));
         txtGradStart.setTextColor(0xFFFFFFFF);
         txtGradStart.setTextSize(TypedValue.COMPLEX_UNIT_SP, 13f);
         txtGradStart.setTypeface(Typeface.create("sans-serif-medium", Typeface.BOLD));
@@ -627,7 +709,7 @@ public class MainActivity extends Activity {
         mDotGlobalGradEnd = new View(this);
         mBtnGlobalGradEnd.addView(mDotGlobalGradEnd, new LinearLayout.LayoutParams(dp(16), dp(16)));
         TextView txtGradEnd = new TextView(this);
-        txtGradEnd.setText(" Color final");
+        txtGradEnd.setText(" " + I18n.get(this, "grad_color_end"));
         txtGradEnd.setTextColor(0xFFFFFFFF);
         txtGradEnd.setTextSize(TypedValue.COMPLEX_UNIT_SP, 13f);
         txtGradEnd.setTypeface(Typeface.create("sans-serif-medium", Typeface.BOLD));
@@ -693,7 +775,7 @@ public class MainActivity extends Activity {
 
         Button btnGradCustomHex = new Button(this);
         btnGradCustomHex.setAllCaps(false);
-        btnGradCustomHex.setText("✨ Selector Avanzado (HSV 2D + HEX)");
+        btnGradCustomHex.setText(I18n.get(this, "picker_advanced"));
         btnGradCustomHex.setTextColor(0xFFFFFFFF);
         btnGradCustomHex.setTextSize(TypedValue.COMPLEX_UNIT_SP, 13);
         btnGradCustomHex.setBackground(roundRect(0xFF232325, dp(14), 1, 0xFF38383B));
@@ -703,7 +785,7 @@ public class MainActivity extends Activity {
         btnGradCustomHex.setOnClickListener(new View.OnClickListener() {
             @Override
             public void onClick(View v) {
-                String title = mGlobalGradEditingEnd ? "Color Final del Degradado" : "Primer Color del Degradado";
+                String title = mGlobalGradEditingEnd ? I18n.get(MainActivity.this, "grad_color_end") : I18n.get(MainActivity.this, "grad_color_start");
                 int curCol = mGlobalGradEditingEnd ? mConfig.gradientEndColor : mConfig.gradientStartColor;
                 showCustomColorPickerDialog(
                         title,
@@ -733,7 +815,7 @@ public class MainActivity extends Activity {
         LinearLayout card = createSectionCard();
 
         TextView secTitle = new TextView(this);
-        secTitle.setText("ACABADO VISUAL Y OPACIDAD DE LA CÁPSULA");
+        secTitle.setText(I18n.get(this, "sec_finish_opacity"));
         secTitle.setTextColor(0xFF82B1FF);
         secTitle.setTextSize(TypedValue.COMPLEX_UNIT_SP, 11);
         secTitle.setTypeface(Typeface.DEFAULT_BOLD);
@@ -748,7 +830,7 @@ public class MainActivity extends Activity {
 
         mBtnStyleSolid = new Button(this);
         mBtnStyleSolid.setAllCaps(false);
-        mBtnStyleSolid.setText("⬛ Color Sólido Puro");
+        mBtnStyleSolid.setText(I18n.get(this, "finish_solid_title"));
         mBtnStyleSolid.setTextSize(TypedValue.COMPLEX_UNIT_SP, 13f);
         mBtnStyleSolid.setOnClickListener(new View.OnClickListener() {
             @Override
@@ -762,7 +844,7 @@ public class MainActivity extends Activity {
 
         mBtnStyleBlur = new Button(this);
         mBtnStyleBlur.setAllCaps(false);
-        mBtnStyleBlur.setText("🫧 Blur / Cristal One UI");
+        mBtnStyleBlur.setText(I18n.get(this, "finish_blur_title"));
         mBtnStyleBlur.setTextSize(TypedValue.COMPLEX_UNIT_SP, 13f);
         mBtnStyleBlur.setOnClickListener(new View.OnClickListener() {
             @Override
@@ -783,7 +865,7 @@ public class MainActivity extends Activity {
         opHeader.setGravity(Gravity.CENTER_VERTICAL);
 
         TextView opTitle = new TextView(this);
-        opTitle.setText("Opacidad del fondo de la cápsula");
+        opTitle.setText(I18n.get(this, "opacity_title"));
         opTitle.setTextColor(0xFFFFFFFF);
         opTitle.setTextSize(TypedValue.COMPLEX_UNIT_SP, 14);
         opHeader.addView(opTitle, new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f));
@@ -830,14 +912,14 @@ public class MainActivity extends Activity {
         LinearLayout card = createSectionCard();
 
         TextView secTitle = new TextView(this);
-        secTitle.setText("CATÁLOGO DE CÁPSULAS NOW BAR (ACTIVACIÓN Y COLOR INDIVIDUAL)");
+        secTitle.setText(I18n.get(this, "sec_catalog_title"));
         secTitle.setTextColor(0xFF82B1FF);
         secTitle.setTextSize(TypedValue.COMPLEX_UNIT_SP, 11);
         secTitle.setTypeface(Typeface.DEFAULT_BOLD);
         card.addView(secTitle);
 
         TextView secSub = new TextView(this);
-        secSub.setText("Activa o desactiva cada tipo de cápsula. Si está desactivada, conservará el fondo original de Samsung. Toca el botón de color de cualquier cápsula si deseas asignarle un color exclusivo distinto al global.");
+        secSub.setText(I18n.get(this, "sec_catalog_desc"));
         secSub.setTextColor(0xFF9AA0B4);
         secSub.setTextSize(TypedValue.COMPLEX_UNIT_SP, 12);
         secSub.setPadding(0, dp(4), 0, dp(12));
@@ -932,7 +1014,7 @@ public class MainActivity extends Activity {
             titleCol.setPadding(dp(12), 0, dp(8), 0);
 
             TextView title = new TextView(this);
-            title.setText(meta.title);
+            title.setText(meta.getTitle(this));
             title.setTextColor(cc.enabled ? 0xFFFFFFFF : 0xFF7D8597);
             title.setTextSize(TypedValue.COMPLEX_UNIT_SP, 14f);
             title.setTypeface(Typeface.create("sans-serif-medium", Typeface.BOLD));
@@ -985,12 +1067,14 @@ public class MainActivity extends Activity {
             String chipLabel;
             if (cc.useCustomColor) {
                 if (cc.customColorMode == ConfigManager.MODE_GRADIENT) {
-                    chipLabel = " 🌈 Degradado" + (cc.useCustomOpacity ? " • " + cc.customOpacity + "%" : "");
+                    chipLabel = " " + I18n.get(this, "tab_gradient") + (cc.useCustomOpacity ? " • " + cc.customOpacity + "%" : "");
                 } else {
-                    chipLabel = " Propio" + (cc.useCustomOpacity ? " • " + cc.customOpacity + "%" : "");
+                    String curLang = I18n.getEffectiveLanguage(this);
+                    String customWord = "es".equals(curLang) ? "Propio" : ("pt".equals(curLang) ? "Próprio" : "Custom");
+                    chipLabel = " " + customWord + (cc.useCustomOpacity ? " • " + cc.customOpacity + "%" : "");
                 }
             } else {
-                chipLabel = isGlobGrad ? " Global 🌈" : " Global";
+                chipLabel = isGlobGrad ? (" Global • " + I18n.get(this, "tab_gradient")) : " Global";
             }
             chipText.setText(chipLabel);
             chipText.setTextColor(cc.useCustomColor ? 0xFF90CAF9 : 0xFFB0B8C8);
@@ -1038,14 +1122,14 @@ public class MainActivity extends Activity {
             expandSection.addView(divider, divLp);
 
             TextView appLabel = new TextView(this);
-            appLabel.setText("APLICACIONES Y SERVICIOS AFECTADOS");
+            appLabel.setText(I18n.get(this, "affected_services"));
             appLabel.setTextColor(0xFF82B1FF);
             appLabel.setTextSize(TypedValue.COMPLEX_UNIT_SP, 10.5f);
             appLabel.setTypeface(Typeface.DEFAULT_BOLD);
             expandSection.addView(appLabel);
 
             TextView appDesc = new TextView(this);
-            appDesc.setText(meta.subtitle);
+            appDesc.setText(meta.getSubtitle(this));
             appDesc.setTextColor(0xFFE0E0E5);
             appDesc.setTextSize(TypedValue.COMPLEX_UNIT_SP, 12.5f);
             appDesc.setPadding(0, dp(3), 0, 0);
@@ -1135,14 +1219,14 @@ public class MainActivity extends Activity {
         titleCol.setPadding(dp(12), 0, 0, 0);
 
         TextView titleTxt = new TextView(this);
-        titleTxt.setText(meta.title);
+        titleTxt.setText(meta.getTitle(this));
         titleTxt.setTextColor(0xFFFFFFFF);
         titleTxt.setTextSize(TypedValue.COMPLEX_UNIT_SP, 15f);
         titleTxt.setTypeface(Typeface.create("sans-serif-medium", Typeface.BOLD));
         titleCol.addView(titleTxt);
 
         TextView subTxt = new TextView(this);
-        subTxt.setText("Color de fondo individual");
+        subTxt.setText(I18n.get(this, "individual_color_title"));
         subTxt.setTextColor(0xFF82B1FF);
         subTxt.setTextSize(TypedValue.COMPLEX_UNIT_SP, 11.5f);
         titleCol.addView(subTxt);
@@ -1153,7 +1237,7 @@ public class MainActivity extends Activity {
         // 2. "Restablecer a Color Global" Button
         final Button btnResetGlobal = new Button(this);
         btnResetGlobal.setAllCaps(false);
-        btnResetGlobal.setText("🌐 Restablecer a Color Global");
+        btnResetGlobal.setText(I18n.get(this, "reset_global_btn"));
         btnResetGlobal.setTextSize(TypedValue.COMPLEX_UNIT_SP, 13f);
         LinearLayout.LayoutParams resetLp = new LinearLayout.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT, dp(42));
@@ -1163,7 +1247,7 @@ public class MainActivity extends Activity {
 
         // 3. Own Live Preview Capsule
         TextView previewHeader = new TextView(this);
-        previewHeader.setText("VISTA PREVIA INDIVIDUAL EN TIEMPO REAL");
+        previewHeader.setText(I18n.get(this, "individual_preview_title"));
         previewHeader.setTextColor(0xFF82B1FF);
         previewHeader.setTextSize(TypedValue.COMPLEX_UNIT_SP, 10.5f);
         previewHeader.setTypeface(Typeface.DEFAULT_BOLD);
@@ -1215,21 +1299,21 @@ public class MainActivity extends Activity {
 
         final Button btnTabFixed = new Button(this);
         btnTabFixed.setAllCaps(false);
-        btnTabFixed.setText("🎨 Paleta Fija");
+        btnTabFixed.setText(I18n.get(this, "tab_solid"));
         btnTabFixed.setTextSize(TypedValue.COMPLEX_UNIT_SP, 12.5f);
 
         View tabSpacer1 = new View(this);
 
         final Button btnTabWallpaper = new Button(this);
         btnTabWallpaper.setAllCaps(false);
-        btnTabWallpaper.setText("🖼️ Fondo Bloqueo");
+        btnTabWallpaper.setText(I18n.get(this, "tab_wallpaper"));
         btnTabWallpaper.setTextSize(TypedValue.COMPLEX_UNIT_SP, 12f);
 
         View tabSpacer2 = new View(this);
 
         final Button btnTabGradient = new Button(this);
         btnTabGradient.setAllCaps(false);
-        btnTabGradient.setText("🌈 Degradado");
+        btnTabGradient.setText(I18n.get(this, "tab_gradient"));
         btnTabGradient.setTextSize(TypedValue.COMPLEX_UNIT_SP, 12.5f);
 
         modeRow.addView(btnTabFixed, new LinearLayout.LayoutParams(0, dp(42), 1f));
@@ -1244,7 +1328,7 @@ public class MainActivity extends Activity {
         palContainer.setOrientation(LinearLayout.VERTICAL);
 
         TextView palLabel = new TextView(this);
-        palLabel.setText("Selecciona un color sólido de la paleta:");
+        palLabel.setText(I18n.get(this, "palette_label"));
         palLabel.setTextColor(0xFFB0B8C8);
         palLabel.setTextSize(TypedValue.COMPLEX_UNIT_SP, 12f);
         palLabel.setPadding(0, 0, 0, dp(8));
@@ -1281,7 +1365,7 @@ public class MainActivity extends Activity {
         wallContainer.setVisibility(View.GONE);
 
         TextView wallInfo = new TextView(this);
-        wallInfo.setText("Selecciona un tono extraído del fondo de pantalla de bloqueo:");
+        wallInfo.setText(I18n.get(this, "wall_info"));
         wallInfo.setTextColor(0xFFB0B8C8);
         wallInfo.setTextSize(TypedValue.COMPLEX_UNIT_SP, 12f);
         wallInfo.setPadding(0, 0, 0, dp(8));
@@ -1295,10 +1379,10 @@ public class MainActivity extends Activity {
         };
 
         String[] variantTitles = new String[]{
-                "Color Principal (Dominante)",
-                "Color Secundario del Fondo",
-                "Acento Dinámico Monet (One UI)",
-                "Zona Inferior (Now Bar)"
+                I18n.get(this, "wall_primary_title"),
+                I18n.get(this, "wall_secondary_title"),
+                I18n.get(this, "wall_monet_title"),
+                I18n.get(this, "wall_bottom_title")
         };
 
         final List<LinearLayout> wallVariantRows = new ArrayList<>();
@@ -1341,7 +1425,7 @@ public class MainActivity extends Activity {
         gradContainer.setVisibility(View.GONE);
 
         TextView gradInfo = new TextView(this);
-        gradInfo.setText("Degradado lineal horizontal de dos paradas para esta cápsula:");
+        gradInfo.setText(I18n.get(this, "grad_info"));
         gradInfo.setTextColor(0xFFB0B8C8);
         gradInfo.setTextSize(TypedValue.COMPLEX_UNIT_SP, 12f);
         gradInfo.setPadding(0, 0, 0, dp(8));
@@ -1360,7 +1444,7 @@ public class MainActivity extends Activity {
         final View dotDialogGradStart = new View(this);
         btnDialogGradStart.addView(dotDialogGradStart, new LinearLayout.LayoutParams(dp(14), dp(14)));
         TextView txtDGradStart = new TextView(this);
-        txtDGradStart.setText(" Primer color");
+        txtDGradStart.setText(" " + I18n.get(this, "grad_color_start"));
         txtDGradStart.setTextColor(0xFFFFFFFF);
         txtDGradStart.setTextSize(TypedValue.COMPLEX_UNIT_SP, 12.5f);
         txtDGradStart.setTypeface(Typeface.create("sans-serif-medium", Typeface.BOLD));
@@ -1374,7 +1458,7 @@ public class MainActivity extends Activity {
         final View dotDialogGradEnd = new View(this);
         btnDialogGradEnd.addView(dotDialogGradEnd, new LinearLayout.LayoutParams(dp(14), dp(14)));
         TextView txtDGradEnd = new TextView(this);
-        txtDGradEnd.setText(" Color final");
+        txtDGradEnd.setText(" " + I18n.get(this, "grad_color_end"));
         txtDGradEnd.setTextColor(0xFFFFFFFF);
         txtDGradEnd.setTextSize(TypedValue.COMPLEX_UNIT_SP, 12.5f);
         txtDGradEnd.setTypeface(Typeface.create("sans-serif-medium", Typeface.BOLD));
@@ -1412,7 +1496,7 @@ public class MainActivity extends Activity {
 
         Button btnDialogGradAdvanced = new Button(this);
         btnDialogGradAdvanced.setAllCaps(false);
-        btnDialogGradAdvanced.setText("✨ Selector Avanzado (HSV 2D + HEX)");
+        btnDialogGradAdvanced.setText(I18n.get(this, "picker_advanced"));
         btnDialogGradAdvanced.setTextColor(0xFFFFFFFF);
         btnDialogGradAdvanced.setTextSize(TypedValue.COMPLEX_UNIT_SP, 12.5f);
         btnDialogGradAdvanced.setBackground(roundRect(0xFF2E2E32, dp(14), 1, 0xFF45454A));
@@ -1429,7 +1513,7 @@ public class MainActivity extends Activity {
         opHeader.setPadding(0, dp(4), 0, dp(2));
 
         TextView opTitle = new TextView(this);
-        opTitle.setText("Opacidad del degradado");
+        opTitle.setText(I18n.get(this, "opacity_title"));
         opTitle.setTextColor(0xFFFFFFFF);
         opTitle.setTextSize(TypedValue.COMPLEX_UNIT_SP, 13f);
         opHeader.addView(opTitle, new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f));
@@ -1490,13 +1574,13 @@ public class MainActivity extends Activity {
                     btnResetGlobal.setBackground(roundRect(0xFF1E3A66, dp(14), 2, 0xFF1477FF));
                     btnResetGlobal.setTextColor(0xFF82B1FF);
                     String globDesc = (mConfig.colorMode == ConfigManager.MODE_GRADIENT)
-                            ? "Degradado"
+                            ? I18n.get(MainActivity.this, "tab_gradient")
                             : String.format("#%06X", (mConfig.resolveBaseRgbForCategory(meta.id, liveWall) & 0x00FFFFFF));
-                    btnResetGlobal.setText("✓ Usando Color y Opacidad Global (" + globDesc + " • " + mConfig.opacity + "%)");
+                    btnResetGlobal.setText("✓ " + I18n.get(MainActivity.this, "using_global_color") + " (" + globDesc + " • " + mConfig.opacity + "%)");
                 } else {
                     btnResetGlobal.setBackground(roundRect(0xFF2E2E32, dp(14), 1, 0xFF45454A));
                     btnResetGlobal.setTextColor(0xFFE0E0E5);
-                    btnResetGlobal.setText("🌐 Restablecer a Color Global");
+                    btnResetGlobal.setText(I18n.get(MainActivity.this, "reset_global_btn"));
                 }
 
                 // Update Swatches in Palette
@@ -1625,7 +1709,7 @@ public class MainActivity extends Activity {
         btnDialogGradAdvanced.setOnClickListener(new View.OnClickListener() {
             @Override
             public void onClick(View v) {
-                String title = gradEditingEnd[0] ? ("Color Final: " + meta.title) : ("Primer Color: " + meta.title);
+                String title = gradEditingEnd[0] ? (I18n.get(MainActivity.this, "grad_color_end") + ": " + meta.getTitle(MainActivity.this)) : (I18n.get(MainActivity.this, "grad_color_start") + ": " + meta.getTitle(MainActivity.this));
                 int cur = gradEditingEnd[0] ? gradEnd[0] : gradStart[0];
                 showCustomColorPickerDialog(title, cur, new OnColorPickedListener() {
                     @Override
@@ -1708,7 +1792,7 @@ public class MainActivity extends Activity {
 
         Button btnAdvanced = new Button(this);
         btnAdvanced.setAllCaps(false);
-        btnAdvanced.setText("✨ Avanzado");
+        btnAdvanced.setText(I18n.get(this, "btn_advanced"));
         btnAdvanced.setTextColor(0xFFFFFFFF);
         btnAdvanced.setTextSize(TypedValue.COMPLEX_UNIT_SP, 12.5f);
         btnAdvanced.setBackground(roundRect(0xFF2E2E32, dp(14), 1, 0xFF45454A));
@@ -1717,7 +1801,7 @@ public class MainActivity extends Activity {
 
         Button btnCancel = new Button(this);
         btnCancel.setAllCaps(false);
-        btnCancel.setText("Cancelar");
+        btnCancel.setText(I18n.get(this, "cancel"));
         btnCancel.setTextColor(0xFFB0B8C8);
         btnCancel.setTextSize(TypedValue.COMPLEX_UNIT_SP, 12.5f);
         btnCancel.setBackground(roundRect(0xFF232325, dp(14), 1, 0xFF38383B));
@@ -1726,7 +1810,7 @@ public class MainActivity extends Activity {
 
         Button btnApply = new Button(this);
         btnApply.setAllCaps(false);
-        btnApply.setText("Aplicar");
+        btnApply.setText(I18n.get(this, "apply"));
         btnApply.setTextColor(0xFFFFFFFF);
         btnApply.setTextSize(TypedValue.COMPLEX_UNIT_SP, 13.5f);
         btnApply.setTypeface(Typeface.DEFAULT_BOLD);
@@ -1743,7 +1827,7 @@ public class MainActivity extends Activity {
             @Override
             public void onClick(View v) {
                 if (currentTab[0] == 2) {
-                    String title = gradEditingEnd[0] ? ("Color Final: " + meta.title) : ("Primer Color: " + meta.title);
+                    String title = gradEditingEnd[0] ? (I18n.get(MainActivity.this, "grad_color_end") + ": " + meta.getTitle(MainActivity.this)) : (I18n.get(MainActivity.this, "grad_color_start") + ": " + meta.getTitle(MainActivity.this));
                     int cur = gradEditingEnd[0] ? gradEnd[0] : gradStart[0];
                     showCustomColorPickerDialog(title, cur, new OnColorPickedListener() {
                         @Override
@@ -1760,7 +1844,7 @@ public class MainActivity extends Activity {
                     });
                 } else {
                     showCustomColorPickerDialog(
-                            "Color y Opacidad: " + meta.title,
+                            I18n.get(MainActivity.this, "dialog_color_opacity_prefix") + meta.getTitle(MainActivity.this),
                             selectedColor[0],
                             hasCustomOpacity[0] ? selectedOpacity[0] : mConfig.opacity,
                             true,
@@ -1871,7 +1955,7 @@ public class MainActivity extends Activity {
         new AlertDialog.Builder(this, android.R.style.Theme_DeviceDefault_Dialog_Alert)
                 .setTitle(title)
                 .setView(scroll)
-                .setPositiveButton("Aplicar Color", new DialogInterface.OnClickListener() {
+                .setPositiveButton(I18n.get(this, "apply_color"), new DialogInterface.OnClickListener() {
                     @Override
                     public void onClick(DialogInterface dialog, int which) {
                         int finalColor = pickerView.getColor();
@@ -1881,7 +1965,7 @@ public class MainActivity extends Activity {
                         }
                     }
                 })
-                .setNegativeButton("Cancelar", null)
+                .setNegativeButton(I18n.get(this, "cancel"), null)
                 .show();
     }
 
@@ -1890,7 +1974,7 @@ public class MainActivity extends Activity {
                 mWallpaperPalette, mConfig.wallpaperVariant);
 
         if (!mConfig.masterEnabled) {
-            mPreviewModeTag.setText("Original One UI");
+            mPreviewModeTag.setText(I18n.get(this, "preview_original"));
             if (mPreviewMediaCapsule != null) {
                 mPreviewMediaCapsule.setCapsuleColor(0x99222630, true, 0x33FFFFFF);
             }
@@ -1902,13 +1986,15 @@ public class MainActivity extends Activity {
 
         if (mConfig.colorMode == ConfigManager.MODE_GRADIENT) {
             int[] grad = mConfig.resolveGlobalGradientArgb();
-            mPreviewModeTag.setText((isBlur ? "Blur • Degradado • " : "Sólido • Degradado • ") + mConfig.opacity + "%");
+            String bTag = isBlur ? (I18n.get(this, "preview_blur") + " • ") : (I18n.get(this, "preview_solid") + " • ");
+            mPreviewModeTag.setText(bTag + I18n.get(this, "preview_gradient") + " • " + mConfig.opacity + "%");
             if (mPreviewMediaCapsule != null && grad != null) {
                 mPreviewMediaCapsule.setCapsuleGradient(grad[0], grad[1], isBlur, strokeColor);
             }
         } else {
             int finalArgb = mConfig.resolveGlobalFinalArgb(liveWall);
-            mPreviewModeTag.setText((isBlur ? "Blur • " : "Sólido • ") + mConfig.opacity + "%");
+            String bTag2 = isBlur ? (I18n.get(this, "preview_blur") + " • ") : (I18n.get(this, "preview_solid") + " • ");
+            mPreviewModeTag.setText(bTag2 + mConfig.opacity + "%");
             if (mPreviewMediaCapsule != null) {
                 mPreviewMediaCapsule.setCapsuleColor(finalArgb, isBlur, strokeColor);
             }
