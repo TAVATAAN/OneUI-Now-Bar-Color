@@ -8,9 +8,12 @@ import android.graphics.Canvas;
 import android.graphics.Color;
 import android.graphics.LinearGradient;
 import android.graphics.Paint;
+import android.graphics.PorterDuff;
+import android.graphics.PorterDuffColorFilter;
 import android.graphics.RectF;
 import android.graphics.Shader;
 import android.graphics.Typeface;
+import android.graphics.drawable.Drawable;
 import android.graphics.drawable.GradientDrawable;
 import android.os.Bundle;
 import android.text.Editable;
@@ -30,6 +33,7 @@ import android.widget.EditText;
 import android.widget.FrameLayout;
 import android.widget.GridLayout;
 import android.widget.HorizontalScrollView;
+import android.widget.ImageView;
 import android.widget.LinearLayout;
 import android.widget.ScrollView;
 import android.widget.SeekBar;
@@ -993,19 +997,12 @@ public class MainActivity extends Activity {
             mainRow.setGravity(Gravity.CENTER_VERTICAL);
             mainRow.setPadding(dp(12), dp(10), dp(14), dp(10));
 
-            // Category Icon Badge
-            FrameLayout iconWrap = new FrameLayout(this);
-            View iconBg = new View(this);
-            iconBg.setBackground(roundRect(meta.accentColor, dp(20), 0, 0));
-            iconWrap.addView(iconBg, new FrameLayout.LayoutParams(dp(40), dp(40)));
+            // Resolved category color for background and chip
+            int resolvedRgb = mConfig.resolveBaseRgbForCategory(meta.id, liveWall);
 
-            TextView iconTxt = new TextView(this);
-            iconTxt.setText(meta.badgeText);
-            iconTxt.setTextColor(0xFFFFFFFF);
-            iconTxt.setTextSize(TypedValue.COMPLEX_UNIT_SP, 16);
-            iconTxt.setGravity(Gravity.CENTER);
-            iconWrap.addView(iconTxt, new FrameLayout.LayoutParams(dp(40), dp(40)));
-            mainRow.addView(iconWrap, new LinearLayout.LayoutParams(dp(40), dp(40)));
+            // Category Icon Badge (Large 48x48 squircle with custom capsule background)
+            FrameLayout iconWrap = createCategoryIconBadge(meta, cc, resolvedRgb);
+            mainRow.addView(iconWrap, new LinearLayout.LayoutParams(dp(48), dp(48)));
 
             // Title Column (Only title visible initially + subtle chevron)
             LinearLayout titleCol = new LinearLayout(this);
@@ -1031,7 +1028,6 @@ public class MainActivity extends Activity {
             mainRow.addView(titleCol, new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f));
 
             // Color Override Chip (Global vs Propio)
-            int resolvedRgb = mConfig.resolveBaseRgbForCategory(meta.id, liveWall);
             LinearLayout colorChip = new LinearLayout(this);
             colorChip.setOrientation(LinearLayout.HORIZONTAL);
             colorChip.setGravity(Gravity.CENTER_VERTICAL);
@@ -1202,17 +1198,23 @@ public class MainActivity extends Activity {
         titleRow.setOrientation(LinearLayout.HORIZONTAL);
         titleRow.setGravity(Gravity.CENTER_VERTICAL);
 
+        final View headerIconBg = new View(this);
+        headerIconBg.setBackground(roundRect(meta.accentColor, dp(14), dp(1), 0x33FFFFFF));
         FrameLayout iconWrap = new FrameLayout(this);
-        View iconBg = new View(this);
-        iconBg.setBackground(roundRect(meta.accentColor, dp(18), 0, 0));
-        iconWrap.addView(iconBg, new FrameLayout.LayoutParams(dp(36), dp(36)));
-        TextView iconTxt = new TextView(this);
-        iconTxt.setText(meta.badgeText);
-        iconTxt.setTextColor(0xFFFFFFFF);
-        iconTxt.setTextSize(TypedValue.COMPLEX_UNIT_SP, 15);
-        iconTxt.setGravity(Gravity.CENTER);
-        iconWrap.addView(iconTxt, new FrameLayout.LayoutParams(dp(36), dp(36)));
-        titleRow.addView(iconWrap, new LinearLayout.LayoutParams(dp(36), dp(36)));
+        iconWrap.addView(headerIconBg, new FrameLayout.LayoutParams(dp(48), dp(48)));
+
+        ImageView headerIconImg = new ImageView(this);
+        int resId = meta.getIconResId(this);
+        if (resId != 0) {
+            headerIconImg.setImageResource(resId);
+        }
+        headerIconImg.setScaleType(ImageView.ScaleType.FIT_CENTER);
+        headerIconImg.setColorFilter(new PorterDuffColorFilter(0xFFFFFFFF, PorterDuff.Mode.SRC_IN));
+        FrameLayout.LayoutParams imgLp = new FrameLayout.LayoutParams(dp(28), dp(28));
+        imgLp.gravity = Gravity.CENTER;
+        iconWrap.addView(headerIconImg, imgLp);
+
+        titleRow.addView(iconWrap, new LinearLayout.LayoutParams(dp(48), dp(48)));
 
         LinearLayout titleCol = new LinearLayout(this);
         titleCol.setOrientation(LinearLayout.VERTICAL);
@@ -1552,20 +1554,34 @@ public class MainActivity extends Activity {
                         int[] g = mConfig.resolveGlobalGradientArgb();
                         if (g != null) {
                             dialogCapsule.setCapsuleGradient(g[0], g[1], isBlur, strokeColor);
+                            GradientDrawable gd = new GradientDrawable(
+                                    GradientDrawable.Orientation.LEFT_RIGHT,
+                                    new int[]{mConfig.gradientStartColor | 0xFF000000, mConfig.gradientEndColor | 0xFF000000});
+                            gd.setCornerRadius(dp(14));
+                            gd.setStroke(dp(1), 0x33FFFFFF);
+                            headerIconBg.setBackground(gd);
                         }
                     } else {
                         int baseRgb = mConfig.resolveBaseRgbForCategory(meta.id, liveWall);
                         int finalArgb = (alpha << 24) | (baseRgb & 0x00FFFFFF);
                         dialogCapsule.setCapsuleColor(finalArgb, isBlur, strokeColor);
+                        headerIconBg.setBackground(roundRect(baseRgb | 0xFF000000, dp(14), dp(1), 0x33FFFFFF));
                     }
                 } else {
                     if (selectedMode[0] == ConfigManager.MODE_GRADIENT) {
                         int startArgb = (alpha << 24) | (gradStart[0] & 0x00FFFFFF);
                         int endArgb = (alpha << 24) | (gradEnd[0] & 0x00FFFFFF);
                         dialogCapsule.setCapsuleGradient(startArgb, endArgb, isBlur, strokeColor);
+                        GradientDrawable gd = new GradientDrawable(
+                                GradientDrawable.Orientation.LEFT_RIGHT,
+                                new int[]{gradStart[0] | 0xFF000000, gradEnd[0] | 0xFF000000});
+                        gd.setCornerRadius(dp(14));
+                        gd.setStroke(dp(1), 0x33FFFFFF);
+                        headerIconBg.setBackground(gd);
                     } else {
                         int finalArgb = (alpha << 24) | (selectedColor[0] & 0x00FFFFFF);
                         dialogCapsule.setCapsuleColor(finalArgb, isBlur, strokeColor);
+                        headerIconBg.setBackground(roundRect(selectedColor[0] | 0xFF000000, dp(14), dp(1), 0x33FFFFFF));
                     }
                 }
 
@@ -2123,6 +2139,51 @@ public class MainActivity extends Activity {
             gd.setStroke(strokeWidthPx, strokeColor);
         }
         return gd;
+    }
+
+    private Drawable createCategoryIconBackground(ConfigManager.CategoryConfig cc, int resolvedRgb, int radiusPx) {
+        boolean isCatGrad = cc.useCustomColor && (cc.customColorMode == ConfigManager.MODE_GRADIENT);
+        boolean isGlobGrad = !cc.useCustomColor && (mConfig.colorMode == ConfigManager.MODE_GRADIENT);
+        if (isCatGrad) {
+            GradientDrawable gd = new GradientDrawable(
+                    GradientDrawable.Orientation.LEFT_RIGHT,
+                    new int[]{cc.customGradientStart | 0xFF000000, cc.customGradientEnd | 0xFF000000});
+            gd.setCornerRadius(radiusPx);
+            gd.setStroke(dp(1), 0x33FFFFFF);
+            return gd;
+        } else if (isGlobGrad) {
+            GradientDrawable gd = new GradientDrawable(
+                    GradientDrawable.Orientation.LEFT_RIGHT,
+                    new int[]{mConfig.gradientStartColor | 0xFF000000, mConfig.gradientEndColor | 0xFF000000});
+            gd.setCornerRadius(radiusPx);
+            gd.setStroke(dp(1), 0x33FFFFFF);
+            return gd;
+        } else {
+            return roundRect(resolvedRgb | 0xFF000000, radiusPx, dp(1), 0x33FFFFFF);
+        }
+    }
+
+    private FrameLayout createCategoryIconBadge(ConfigManager.CategoryMeta meta, ConfigManager.CategoryConfig cc, int resolvedRgb) {
+        FrameLayout iconWrap = new FrameLayout(this);
+        View iconBg = new View(this);
+        iconBg.setBackground(createCategoryIconBackground(cc, resolvedRgb, dp(14)));
+        iconWrap.addView(iconBg, new FrameLayout.LayoutParams(dp(48), dp(48)));
+
+        ImageView iconImg = new ImageView(this);
+        int resId = meta.getIconResId(this);
+        if (resId != 0) {
+            iconImg.setImageResource(resId);
+        }
+        iconImg.setScaleType(ImageView.ScaleType.FIT_CENTER);
+        iconImg.setColorFilter(new PorterDuffColorFilter(0xFFFFFFFF, PorterDuff.Mode.SRC_IN));
+        FrameLayout.LayoutParams imgLp = new FrameLayout.LayoutParams(dp(28), dp(28));
+        imgLp.gravity = Gravity.CENTER;
+        iconWrap.addView(iconImg, imgLp);
+
+        if (!cc.enabled) {
+            iconWrap.setAlpha(0.55f);
+        }
+        return iconWrap;
     }
 
     private int shiftAlpha(int color, int alpha) {

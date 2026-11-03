@@ -52,15 +52,22 @@ public class ConfigManager {
         public final String id;
         public final String title;
         public final String subtitle;
+        public final String iconName;
         public final String badgeText;
         public final int accentColor;
 
-        public CategoryMeta(String id, String title, String subtitle, String badgeText, int accentColor) {
+        public CategoryMeta(String id, String title, String subtitle, String iconName, int accentColor) {
             this.id = id;
             this.title = title;
             this.subtitle = subtitle;
-            this.badgeText = badgeText;
+            this.iconName = iconName;
+            this.badgeText = "";
             this.accentColor = accentColor;
+        }
+
+        public int getIconResId(Context ctx) {
+            if (ctx == null || iconName == null || iconName.isEmpty()) return 0;
+            return ctx.getResources().getIdentifier(iconName, "drawable", ctx.getPackageName());
         }
 
         public String getTitle(Context ctx) {
@@ -81,70 +88,70 @@ public class ConfigManager {
                 CAT_MEDIA,
                 "Música y Multimedia",
                 "Spotify, YouTube Music, Samsung Music y reproductores de audio/video",
-                "♪",
+                "ic_cat_media",
                 0xFFEC407A
         ));
         ALL_CATEGORIES.add(new CategoryMeta(
                 CAT_TIMER_CLOCK,
                 "Reloj, Temporizador y Cronómetro",
                 "Temporizadores en cuenta regresiva, cronómetro y alarmas de Reloj",
-                "⏱",
+                "ic_cat_timer",
                 0xFF42A5F5
         ));
         ALL_CATEGORIES.add(new CategoryMeta(
                 CAT_RECORDER,
                 "Grabadora de Voz",
                 "Notas de voz y grabaciones de audio en curso en pantalla de bloqueo",
-                "🎙",
+                "ic_cat_recorder",
                 0xFFEF5350
         ));
         ALL_CATEGORIES.add(new CategoryMeta(
                 CAT_FLASHLIGHT,
                 "Linterna",
                 "Cápsula de linterna activa y controles rápidos en pantalla de bloqueo",
-                "🔦",
+                "ic_cat_flashlight",
                 0xFFFFB300
         ));
         ALL_CATEGORIES.add(new CategoryMeta(
                 CAT_BATTERY,
                 "Batería y Carga",
                 "Cápsula de estado de batería y animación de carga rápida",
-                "⚡",
+                "ic_cat_battery",
                 0xFF66BB6A
         ));
         ALL_CATEGORIES.add(new CategoryMeta(
                 CAT_BRIEF,
                 "Now Brief e Inteligencia Artificial",
                 "Resumen diario inteligente de Samsung, clima y sugerencias Galaxy AI",
-                "✦",
+                "ic_cat_brief",
                 0xFFAB47BC
         ));
         ALL_CATEGORIES.add(new CategoryMeta(
                 CAT_CALL,
                 "Llamadas en Curso",
                 "Cápsula de llamada activa, teléfono y llamadas VoIP en segundo plano",
-                "📞",
+                "ic_cat_call",
                 0xFF26A69A
         ));
         ALL_CATEGORIES.add(new CategoryMeta(
                 CAT_MODES,
                 "Modos y Rutinas",
                 "Modo Sueño, Conducción, Ejercicio, Trabajo y Rutinas de Bixby",
-                "★",
+                "ic_cat_modes",
                 0xFF5C6BC0
         ));
         ALL_CATEGORIES.add(new CategoryMeta(
                 CAT_SPORTS_MAPS_HEALTH,
                 "Deportes, Mapas y Salud",
                 "Marcadores deportivos de Google, navegación en vivo y Samsung Health",
-                "🧭",
+                "ic_cat_sports",
                 0xFFFFA726
         ));
         ALL_CATEGORIES.add(new CategoryMeta(
                 CAT_OTHER_ONGOING,
                 "Otras Actividades en Vivo",
                 "Intérprete, Smart View, compartición en vivo, contactos y apps de terceros",
-                "📌",
+                "ic_cat_other",
                 0xFF78909C
         ));
     }
