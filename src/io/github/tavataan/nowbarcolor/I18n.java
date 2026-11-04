@@ -125,8 +125,10 @@ public class I18n {
             // Categories
             case "cat_media_title": return "Music & Multimedia";
             case "cat_media_desc": return "Spotify, YouTube Music, Samsung Music, and audio/video players";
-            case "cat_timer_title": return "Clock, Timer & Stopwatch";
-            case "cat_timer_desc": return "Countdown timers, stopwatch, and Clock alarms";
+            case "cat_timer_title":
+            case "cat_timer_clock_title": return "Clock, Timer & Stopwatch";
+            case "cat_timer_desc":
+            case "cat_timer_clock_desc": return "Countdown timers, stopwatch, and Clock alarms";
             case "cat_recorder_title": return "Voice Recorder";
             case "cat_recorder_desc": return "Ongoing voice notes and audio recordings on lock screen";
             case "cat_flashlight_title": return "Flashlight";
@@ -139,10 +141,14 @@ public class I18n {
             case "cat_call_desc": return "Active call capsule, phone, and background VoIP calls";
             case "cat_modes_title": return "Modes & Routines";
             case "cat_modes_desc": return "Sleep, Driving, Exercise, Work modes, and Bixby Routines";
-            case "cat_sports_title": return "Sports, Maps & Health";
-            case "cat_sports_desc": return "Google sports scores, live navigation, and Samsung Health";
-            case "cat_other_title": return "Other Live Activities";
-            case "cat_other_desc": return "Interpreter, Smart View, live sharing, contacts, and third-party apps";
+            case "cat_sports_title":
+            case "cat_sports_maps_health_title": return "Sports, Maps & Health";
+            case "cat_sports_desc":
+            case "cat_sports_maps_health_desc": return "Google sports scores, live navigation, and Samsung Health";
+            case "cat_other_title":
+            case "cat_other_ongoing_title": return "Other Live Activities";
+            case "cat_other_desc":
+            case "cat_other_ongoing_desc": return "Interpreter, Smart View, live sharing, contacts, and third-party apps";
             default: return key;
         }
     }
@@ -209,8 +215,10 @@ public class I18n {
             // Categories
             case "cat_media_title": return "Música y Multimedia";
             case "cat_media_desc": return "Spotify, YouTube Music, Samsung Music y reproductores de audio/video";
-            case "cat_timer_title": return "Reloj, Temporizador y Cronómetro";
-            case "cat_timer_desc": return "Temporizadores en cuenta regresiva, cronómetro y alarmas de Reloj";
+            case "cat_timer_title":
+            case "cat_timer_clock_title": return "Reloj, Temporizador y Cronómetro";
+            case "cat_timer_desc":
+            case "cat_timer_clock_desc": return "Temporizadores en cuenta regresiva, cronómetro y alarmas de Reloj";
             case "cat_recorder_title": return "Grabadora de Voz";
             case "cat_recorder_desc": return "Notas de voz y grabaciones de audio en curso en pantalla de bloqueo";
             case "cat_flashlight_title": return "Linterna";
@@ -223,10 +231,14 @@ public class I18n {
             case "cat_call_desc": return "Cápsula de llamada activa, teléfono y llamadas VoIP en segundo plano";
             case "cat_modes_title": return "Modos y Rutinas";
             case "cat_modes_desc": return "Modo Sueño, Conducción, Ejercicio, Trabajo y Rutinas de Bixby";
-            case "cat_sports_title": return "Deportes, Mapas y Salud";
-            case "cat_sports_desc": return "Marcadores deportivos de Google, navegación en vivo y Samsung Health";
-            case "cat_other_title": return "Otras Actividades en Vivo";
-            case "cat_other_desc": return "Intérprete, Smart View, compartición en vivo, contactos y apps de terceros";
+            case "cat_sports_title":
+            case "cat_sports_maps_health_title": return "Deportes, Mapas y Salud";
+            case "cat_sports_desc":
+            case "cat_sports_maps_health_desc": return "Marcadores deportivos de Google, navegación en vivo y Samsung Health";
+            case "cat_other_title":
+            case "cat_other_ongoing_title": return "Otras Actividades en Vivo";
+            case "cat_other_desc":
+            case "cat_other_ongoing_desc": return "Intérprete, Smart View, compartición en vivo, contactos y apps de terceros";
             default: return key;
         }
     }
@@ -293,8 +305,10 @@ public class I18n {
             // Categories
             case "cat_media_title": return "Música e Multimídia";
             case "cat_media_desc": return "Spotify, YouTube Music, Samsung Music e reprodutores de áudio/vídeo";
-            case "cat_timer_title": return "Relógio, Temporizador e Cronômetro";
-            case "cat_timer_desc": return "Temporizadores regressivos, cronômetro e alarmes do Relógio";
+            case "cat_timer_title":
+            case "cat_timer_clock_title": return "Relógio, Temporizador e Cronômetro";
+            case "cat_timer_desc":
+            case "cat_timer_clock_desc": return "Temporizadores regressivos, cronômetro e alarmes do Relógio";
             case "cat_recorder_title": return "Gravador de Voz";
             case "cat_recorder_desc": return "Notas de voz e gravações de áudio em andamento na tela de bloqueio";
             case "cat_flashlight_title": return "Lanterna";
@@ -307,10 +321,14 @@ public class I18n {
             case "cat_call_desc": return "Cápsula de chamada ativa, telefone e chamadas VoIP em segundo plano";
             case "cat_modes_title": return "Modos e Rotinas";
             case "cat_modes_desc": return "Modo Sono, Direção, Exercício, Trabalho e Rotinas da Bixby";
-            case "cat_sports_title": return "Esportes, Mapas e Saúde";
-            case "cat_sports_desc": return "Placares esportivos do Google, navegação ao vivo e Samsung Health";
-            case "cat_other_title": return "Outras Atividades ao Vivo";
-            case "cat_other_desc": return "Intérprete, Smart View, compartilhamento ao vivo, contatos e apps de terceiros";
+            case "cat_sports_title":
+            case "cat_sports_maps_health_title": return "Esportes, Mapas e Saúde";
+            case "cat_sports_desc":
+            case "cat_sports_maps_health_desc": return "Placares esportivos do Google, navegação ao vivo e Samsung Health";
+            case "cat_other_title":
+            case "cat_other_ongoing_title": return "Outras Atividades ao Vivo";
+            case "cat_other_desc":
+            case "cat_other_ongoing_desc": return "Intérprete, Smart View, compartilhamento ao vivo, contatos e apps de terceiros";
             default: return key;
         }
     }

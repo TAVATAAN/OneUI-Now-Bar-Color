@@ -72,12 +72,20 @@ public class ConfigManager {
 
         public String getTitle(Context ctx) {
             if (ctx == null) return this.title;
-            return I18n.get(ctx, "cat_" + id + "_title");
+            String res = I18n.get(ctx, "cat_" + id + "_title");
+            if (res == null || res.equals("cat_" + id + "_title")) {
+                return this.title;
+            }
+            return res;
         }
 
         public String getSubtitle(Context ctx) {
             if (ctx == null) return this.subtitle;
-            return I18n.get(ctx, "cat_" + id + "_desc");
+            String res = I18n.get(ctx, "cat_" + id + "_desc");
+            if (res == null || res.equals("cat_" + id + "_desc")) {
+                return this.subtitle;
+            }
+            return res;
         }
     }
 
