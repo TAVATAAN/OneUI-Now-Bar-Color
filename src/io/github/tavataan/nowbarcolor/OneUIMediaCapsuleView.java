@@ -364,8 +364,9 @@ public class OneUIMediaCapsuleView extends View {
         if (width <= 0) return;
 
         // 1. Stacked Depth: Secondary Curved Bevel Contour (+3dp below)
+        float radius = mCapsuleHeight / 2f;
         mBevelRect.set(dp(3f), mBevelOffset, width - dp(3f), mCapsuleHeight + mBevelOffset);
-        canvas.drawRoundRect(mBevelRect, mCapsuleRadius, mCapsuleRadius, mBevelPaint);
+        canvas.drawRoundRect(mBevelRect, radius, radius, mBevelPaint);
 
         // 2. Main Capsule Pill Body
         mCapsuleRect.set(0, 0, width, mCapsuleHeight);
@@ -374,12 +375,12 @@ public class OneUIMediaCapsuleView extends View {
             mBgPaint.setShader(new LinearGradient(0, 0, width, 0,
                     mGradStart, mGradEnd, Shader.TileMode.CLAMP));
         }
-        canvas.drawRoundRect(mCapsuleRect, mCapsuleRadius, mCapsuleRadius, mBgPaint);
+        canvas.drawRoundRect(mCapsuleRect, radius, radius, mBgPaint);
 
         // 3. Subtle Inner Stroke / Bevel
         float halfStroke = dp(0.5f);
         mStrokeRect.set(halfStroke, halfStroke, width - halfStroke, mCapsuleHeight - halfStroke);
-        canvas.drawRoundRect(mStrokeRect, mCapsuleRadius - halfStroke, mCapsuleRadius - halfStroke, mStrokePaint);
+        canvas.drawRoundRect(mStrokeRect, radius - halfStroke, radius - halfStroke, mStrokePaint);
 
         // 4. Album Art (56dp circle, 14dp left margin, 14dp top margin)
         float albumLeft = mAlbumLeftMargin;
@@ -415,11 +416,12 @@ public class OneUIMediaCapsuleView extends View {
         float rightAreaLeft = albumLeft + mAlbumSize + dp(12f);
         float rightAreaRight = width - dp(18f);
         float controlsCenterX = (rightAreaLeft + rightAreaRight) / 2f;
+        float rightWidth = Math.max(0, rightAreaRight - rightAreaLeft);
 
         // Clip canvas to the capsule pill so waves never bleed outside
         int saveCount = canvas.save();
         mClipPath.reset();
-        mClipPath.addRoundRect(mCapsuleRect, mCapsuleRadius, mCapsuleRadius, Path.Direction.CW);
+        mClipPath.addRoundRect(mCapsuleRect, radius, radius, Path.Direction.CW);
         canvas.clipPath(mClipPath);
 
         // 6. Fluid Acoustic Waves Visualizer (Docked at base per Samsung AODService)
@@ -429,14 +431,16 @@ public class OneUIMediaCapsuleView extends View {
 
         // 7. Song Title: "Greenpath • TAVATAAN"
         float textY = dp(23f);
+        mTextPaint.setTextSize(rightWidth < dp(140f) ? sp(11.5f) : sp(13.5f));
         canvas.drawText("Greenpath • TAVATAAN", controlsCenterX, textY, mTextPaint);
 
         // 8. Playback Controls (Previous, Pause, Next)
         float controlsCenterY = dp(49.0f);
-        drawPlaybackControls(canvas, controlsCenterX, controlsCenterY);
+        float adaptiveSpacing = Math.min(mControlsSpacing, rightWidth * 0.28f);
+        drawPlaybackControls(canvas, controlsCenterX, controlsCenterY, adaptiveSpacing);
     }
 
-    private void drawPlaybackControls(Canvas canvas, float centerX, float centerY) {
+    private void drawPlaybackControls(Canvas canvas, float centerX, float centerY, float spacing) {
         // Center: Pause Button (Two thick parallel rounded bars)
         float barW = dp(4.6f);
         float barH = dp(17.5f);
@@ -453,7 +457,7 @@ public class OneUIMediaCapsuleView extends View {
         canvas.drawRoundRect(mPauseBar2Rect, barRadius, barRadius, mControlsPaint);
 
         // Left: Skip Previous Button (Vertical bar on left + triangle pointing left)
-        float prevCenterX = centerX - mControlsSpacing;
+        float prevCenterX = centerX - spacing;
         float prevBarW = dp(2.4f);
         float prevBarH = dp(14f);
         float prevTriangleW = dp(10.5f);
@@ -473,7 +477,7 @@ public class OneUIMediaCapsuleView extends View {
         canvas.drawPath(mPrevTrianglePath, mControlsPaint);
 
         // Right: Skip Next Button (Triangle pointing right + vertical bar on right)
-        float nextCenterX = centerX + mControlsSpacing;
+        float nextCenterX = centerX + spacing;
         float nextBarW = dp(2.4f);
         float nextBarH = dp(14f);
         float nextTriangleW = dp(10.5f);

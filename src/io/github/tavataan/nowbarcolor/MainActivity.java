@@ -18,6 +18,7 @@ import android.graphics.drawable.GradientDrawable;
 import android.os.Bundle;
 import android.text.Editable;
 import android.text.InputFilter;
+import android.text.TextUtils;
 import android.text.TextWatcher;
 import android.transition.AutoTransition;
 import android.transition.TransitionManager;
@@ -392,8 +393,9 @@ public class MainActivity extends Activity {
         };
         mLockscreenStage.setWillNotDraw(false);
         LinearLayout.LayoutParams stageLp = new LinearLayout.LayoutParams(
-                ViewGroup.LayoutParams.MATCH_PARENT, dp(132));
+                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT);
         stageLp.topMargin = dp(10);
+        mLockscreenStage.setMinimumHeight(dp(120));
         mLockscreenStage.setPadding(dp(14), dp(18), dp(14), dp(18));
 
         // Pixel-Perfect Samsung One UI 7 Media Capsule
@@ -420,12 +422,16 @@ public class MainActivity extends Activity {
         t.setTextColor(0xFFFFFFFF);
         t.setTextSize(TypedValue.COMPLEX_UNIT_SP, 15.5f);
         t.setTypeface(Typeface.create("sans-serif-medium", Typeface.BOLD));
+        t.setMaxLines(2);
+        t.setEllipsize(TextUtils.TruncateAt.END);
         textCol.addView(t);
 
         TextView s = new TextView(this);
         s.setText(I18n.get(this, "enable_sub"));
         s.setTextColor(0xFF9AA0B4);
         s.setTextSize(TypedValue.COMPLEX_UNIT_SP, 12);
+        s.setMaxLines(3);
+        s.setEllipsize(TextUtils.TruncateAt.END);
         textCol.addView(s);
 
         card.addView(textCol, new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f));
@@ -462,10 +468,16 @@ public class MainActivity extends Activity {
         modeRowLp.topMargin = dp(10);
         modeRowLp.bottomMargin = dp(14);
 
+        boolean isCompact = isCompactScreen();
+
         mBtnFixedMode = new Button(this);
         mBtnFixedMode.setAllCaps(false);
         mBtnFixedMode.setText(I18n.get(this, "tab_solid"));
-        mBtnFixedMode.setTextSize(TypedValue.COMPLEX_UNIT_SP, 12.5f);
+        mBtnFixedMode.setTextSize(TypedValue.COMPLEX_UNIT_SP, isCompact ? 11.5f : 12.5f);
+        mBtnFixedMode.setMinimumHeight(dp(42));
+        mBtnFixedMode.setPadding(dp(4), dp(6), dp(4), dp(6));
+        mBtnFixedMode.setMaxLines(2);
+        mBtnFixedMode.setEllipsize(TextUtils.TruncateAt.END);
         mBtnFixedMode.setOnClickListener(new View.OnClickListener() {
             @Override
             public void onClick(View v) {
@@ -479,7 +491,11 @@ public class MainActivity extends Activity {
         mBtnWallpaperMode = new Button(this);
         mBtnWallpaperMode.setAllCaps(false);
         mBtnWallpaperMode.setText(I18n.get(this, "tab_wallpaper"));
-        mBtnWallpaperMode.setTextSize(TypedValue.COMPLEX_UNIT_SP, 12f);
+        mBtnWallpaperMode.setTextSize(TypedValue.COMPLEX_UNIT_SP, isCompact ? 11f : 12f);
+        mBtnWallpaperMode.setMinimumHeight(dp(42));
+        mBtnWallpaperMode.setPadding(dp(4), dp(6), dp(4), dp(6));
+        mBtnWallpaperMode.setMaxLines(2);
+        mBtnWallpaperMode.setEllipsize(TextUtils.TruncateAt.END);
         mBtnWallpaperMode.setOnClickListener(new View.OnClickListener() {
             @Override
             public void onClick(View v) {
@@ -495,7 +511,11 @@ public class MainActivity extends Activity {
         mBtnGradientMode = new Button(this);
         mBtnGradientMode.setAllCaps(false);
         mBtnGradientMode.setText(I18n.get(this, "tab_gradient"));
-        mBtnGradientMode.setTextSize(TypedValue.COMPLEX_UNIT_SP, 12.5f);
+        mBtnGradientMode.setTextSize(TypedValue.COMPLEX_UNIT_SP, isCompact ? 11.5f : 12.5f);
+        mBtnGradientMode.setMinimumHeight(dp(42));
+        mBtnGradientMode.setPadding(dp(4), dp(6), dp(4), dp(6));
+        mBtnGradientMode.setMaxLines(2);
+        mBtnGradientMode.setEllipsize(TextUtils.TruncateAt.END);
         mBtnGradientMode.setOnClickListener(new View.OnClickListener() {
             @Override
             public void onClick(View v) {
@@ -504,11 +524,11 @@ public class MainActivity extends Activity {
             }
         });
 
-        modeRow.addView(mBtnFixedMode, new LinearLayout.LayoutParams(0, dp(44), 1f));
-        modeRow.addView(spacer1, new LinearLayout.LayoutParams(dp(6), 1));
-        modeRow.addView(mBtnWallpaperMode, new LinearLayout.LayoutParams(0, dp(44), 1f));
-        modeRow.addView(spacer2, new LinearLayout.LayoutParams(dp(6), 1));
-        modeRow.addView(mBtnGradientMode, new LinearLayout.LayoutParams(0, dp(44), 1f));
+        modeRow.addView(mBtnFixedMode, new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f));
+        modeRow.addView(spacer1, new LinearLayout.LayoutParams(dp(4), 1));
+        modeRow.addView(mBtnWallpaperMode, new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f));
+        modeRow.addView(spacer2, new LinearLayout.LayoutParams(dp(4), 1));
+        modeRow.addView(mBtnGradientMode, new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f));
         card.addView(modeRow, modeRowLp);
 
         // Container A: Wide Fixed Color Palette Grid + Custom HSV/HEX Picker Button
@@ -690,19 +710,23 @@ public class MainActivity extends Activity {
         LinearLayout subtabsRow = new LinearLayout(this);
         subtabsRow.setOrientation(LinearLayout.HORIZONTAL);
         LinearLayout.LayoutParams stlp = new LinearLayout.LayoutParams(
-                ViewGroup.LayoutParams.MATCH_PARENT, dp(42));
+                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT);
         stlp.bottomMargin = dp(12);
 
         mBtnGlobalGradStart = new LinearLayout(this);
         mBtnGlobalGradStart.setOrientation(LinearLayout.HORIZONTAL);
         mBtnGlobalGradStart.setGravity(Gravity.CENTER);
+        mBtnGlobalGradStart.setMinimumHeight(dp(40));
+        mBtnGlobalGradStart.setPadding(dp(8), dp(6), dp(8), dp(6));
         mDotGlobalGradStart = new View(this);
-        mBtnGlobalGradStart.addView(mDotGlobalGradStart, new LinearLayout.LayoutParams(dp(16), dp(16)));
+        mBtnGlobalGradStart.addView(mDotGlobalGradStart, new LinearLayout.LayoutParams(dp(14), dp(14)));
         TextView txtGradStart = new TextView(this);
         txtGradStart.setText(" " + I18n.get(this, "grad_color_start"));
         txtGradStart.setTextColor(0xFFFFFFFF);
-        txtGradStart.setTextSize(TypedValue.COMPLEX_UNIT_SP, 13f);
+        txtGradStart.setTextSize(TypedValue.COMPLEX_UNIT_SP, isCompact ? 11.5f : 12.5f);
         txtGradStart.setTypeface(Typeface.create("sans-serif-medium", Typeface.BOLD));
+        txtGradStart.setSingleLine(true);
+        txtGradStart.setEllipsize(TextUtils.TruncateAt.END);
         mBtnGlobalGradStart.addView(txtGradStart);
 
         View subGap = new View(this);
@@ -710,13 +734,17 @@ public class MainActivity extends Activity {
         mBtnGlobalGradEnd = new LinearLayout(this);
         mBtnGlobalGradEnd.setOrientation(LinearLayout.HORIZONTAL);
         mBtnGlobalGradEnd.setGravity(Gravity.CENTER);
+        mBtnGlobalGradEnd.setMinimumHeight(dp(40));
+        mBtnGlobalGradEnd.setPadding(dp(8), dp(6), dp(8), dp(6));
         mDotGlobalGradEnd = new View(this);
-        mBtnGlobalGradEnd.addView(mDotGlobalGradEnd, new LinearLayout.LayoutParams(dp(16), dp(16)));
+        mBtnGlobalGradEnd.addView(mDotGlobalGradEnd, new LinearLayout.LayoutParams(dp(14), dp(14)));
         TextView txtGradEnd = new TextView(this);
         txtGradEnd.setText(" " + I18n.get(this, "grad_color_end"));
         txtGradEnd.setTextColor(0xFFFFFFFF);
-        txtGradEnd.setTextSize(TypedValue.COMPLEX_UNIT_SP, 13f);
+        txtGradEnd.setTextSize(TypedValue.COMPLEX_UNIT_SP, isCompact ? 11.5f : 12.5f);
         txtGradEnd.setTypeface(Typeface.create("sans-serif-medium", Typeface.BOLD));
+        txtGradEnd.setSingleLine(true);
+        txtGradEnd.setEllipsize(TextUtils.TruncateAt.END);
         mBtnGlobalGradEnd.addView(txtGradEnd);
 
         mBtnGlobalGradStart.setOnClickListener(new View.OnClickListener() {
@@ -735,9 +763,9 @@ public class MainActivity extends Activity {
             }
         });
 
-        subtabsRow.addView(mBtnGlobalGradStart, new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.MATCH_PARENT, 1f));
+        subtabsRow.addView(mBtnGlobalGradStart, new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f));
         subtabsRow.addView(subGap, new LinearLayout.LayoutParams(dp(8), 1));
-        subtabsRow.addView(mBtnGlobalGradEnd, new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.MATCH_PARENT, 1f));
+        subtabsRow.addView(mBtnGlobalGradEnd, new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f));
         mGradientModeContainer.addView(subtabsRow, stlp);
 
         // Gradient preset palette grid
@@ -832,10 +860,16 @@ public class MainActivity extends Activity {
         srlp.topMargin = dp(10);
         srlp.bottomMargin = dp(16);
 
+        boolean isCompact = isCompactScreen();
+
         mBtnStyleSolid = new Button(this);
         mBtnStyleSolid.setAllCaps(false);
         mBtnStyleSolid.setText(I18n.get(this, "finish_solid_title"));
-        mBtnStyleSolid.setTextSize(TypedValue.COMPLEX_UNIT_SP, 13f);
+        mBtnStyleSolid.setTextSize(TypedValue.COMPLEX_UNIT_SP, isCompact ? 12f : 13f);
+        mBtnStyleSolid.setMinimumHeight(dp(42));
+        mBtnStyleSolid.setPadding(dp(6), dp(6), dp(6), dp(6));
+        mBtnStyleSolid.setMaxLines(2);
+        mBtnStyleSolid.setEllipsize(TextUtils.TruncateAt.END);
         mBtnStyleSolid.setOnClickListener(new View.OnClickListener() {
             @Override
             public void onClick(View v) {
@@ -849,7 +883,11 @@ public class MainActivity extends Activity {
         mBtnStyleBlur = new Button(this);
         mBtnStyleBlur.setAllCaps(false);
         mBtnStyleBlur.setText(I18n.get(this, "finish_blur_title"));
-        mBtnStyleBlur.setTextSize(TypedValue.COMPLEX_UNIT_SP, 13f);
+        mBtnStyleBlur.setTextSize(TypedValue.COMPLEX_UNIT_SP, isCompact ? 12f : 13f);
+        mBtnStyleBlur.setMinimumHeight(dp(42));
+        mBtnStyleBlur.setPadding(dp(6), dp(6), dp(6), dp(6));
+        mBtnStyleBlur.setMaxLines(2);
+        mBtnStyleBlur.setEllipsize(TextUtils.TruncateAt.END);
         mBtnStyleBlur.setOnClickListener(new View.OnClickListener() {
             @Override
             public void onClick(View v) {
@@ -858,9 +896,9 @@ public class MainActivity extends Activity {
             }
         });
 
-        styleRow.addView(mBtnStyleSolid, new LinearLayout.LayoutParams(0, dp(44), 1f));
+        styleRow.addView(mBtnStyleSolid, new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f));
         styleRow.addView(gap, new LinearLayout.LayoutParams(dp(10), 1));
-        styleRow.addView(mBtnStyleBlur, new LinearLayout.LayoutParams(0, dp(44), 1f));
+        styleRow.addView(mBtnStyleBlur, new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f));
         card.addView(styleRow, srlp);
 
         // Opacity Header Row
@@ -970,6 +1008,8 @@ public class MainActivity extends Activity {
         Integer liveWall = WallpaperColorHelper.resolveForVariant(
                 mWallpaperPalette, mConfig.wallpaperVariant);
 
+        boolean isCompact = isCompactScreen();
+
         for (int i = 0; i < ConfigManager.ALL_CATEGORIES.size(); i++) {
             final ConfigManager.CategoryMeta meta = ConfigManager.ALL_CATEGORIES.get(i);
             final ConfigManager.CategoryConfig cc = mConfig.getCategory(meta.id);
@@ -980,61 +1020,69 @@ public class MainActivity extends Activity {
             rootIsland.setOrientation(LinearLayout.VERTICAL);
             rootIsland.setBackground(roundRect(
                     isExpanded ? 0xFF2A2A2E : 0xFF232325,
-                    dp(28),
+                    dp(24),
                     1,
                     isExpanded ? 0xFF1477FF : 0xFF38383B
             ));
             LinearLayout.LayoutParams rlp = new LinearLayout.LayoutParams(
                     ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT);
             if (i < ConfigManager.ALL_CATEGORIES.size() - 1) {
-                rlp.bottomMargin = dp(10);
+                rlp.bottomMargin = isCompact ? dp(8) : dp(10);
             }
             rootIsland.setLayoutParams(rlp);
 
-            // 2. Main Row (Icon, Title, Expand indicator, Color chip, Switch)
+            // 2. Main Row (Icon, Center Column [Title row + Chip row], Switch)
             LinearLayout mainRow = new LinearLayout(this);
             mainRow.setOrientation(LinearLayout.HORIZONTAL);
             mainRow.setGravity(Gravity.CENTER_VERTICAL);
-            mainRow.setPadding(dp(12), dp(10), dp(14), dp(10));
+            int padH = isCompact ? dp(10) : dp(14);
+            int padV = isCompact ? dp(8) : dp(10);
+            mainRow.setPadding(padH, padV, padH, padV);
 
             // Resolved category color for background and chip
             int resolvedRgb = mConfig.resolveBaseRgbForCategory(meta.id, liveWall);
 
-            // Category Icon Badge (Large 48x48 squircle with custom capsule background)
-            FrameLayout iconWrap = createCategoryIconBadge(meta, cc, resolvedRgb);
-            mainRow.addView(iconWrap, new LinearLayout.LayoutParams(dp(48), dp(48)));
+            // Category Icon Badge (Scales adaptively: 42dp on compact, 48dp on normal)
+            int iconSize = isCompact ? dp(42) : dp(48);
+            FrameLayout iconWrap = createCategoryIconBadge(meta, cc, resolvedRgb, iconSize);
+            mainRow.addView(iconWrap, new LinearLayout.LayoutParams(iconSize, iconSize));
 
-            // Title Column (Only title visible initially + subtle chevron)
-            LinearLayout titleCol = new LinearLayout(this);
-            titleCol.setOrientation(LinearLayout.HORIZONTAL);
-            titleCol.setGravity(Gravity.CENTER_VERTICAL);
-            titleCol.setPadding(dp(12), 0, dp(8), 0);
+            // Center Column (Vertical layout: Title on top, Chip underneath)
+            LinearLayout centerCol = new LinearLayout(this);
+            centerCol.setOrientation(LinearLayout.VERTICAL);
+            centerCol.setPadding(dp(12), 0, dp(8), 0);
+
+            // Row 1: Title + Chevron
+            LinearLayout titleRow = new LinearLayout(this);
+            titleRow.setOrientation(LinearLayout.HORIZONTAL);
+            titleRow.setGravity(Gravity.CENTER_VERTICAL);
 
             TextView title = new TextView(this);
             title.setText(meta.getTitle(this));
             title.setTextColor(cc.enabled ? 0xFFFFFFFF : 0xFF7D8597);
-            title.setTextSize(TypedValue.COMPLEX_UNIT_SP, 14f);
+            title.setTextSize(TypedValue.COMPLEX_UNIT_SP, isCompact ? 13f : 14f);
             title.setTypeface(Typeface.create("sans-serif-medium", Typeface.BOLD));
-            LinearLayout.LayoutParams tlp = new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f);
-            titleCol.addView(title, tlp);
+            title.setMaxLines(2);
+            title.setEllipsize(TextUtils.TruncateAt.END);
+            titleRow.addView(title, new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f));
 
             TextView arrowView = new TextView(this);
             arrowView.setText(isExpanded ? "▲" : "▼");
             arrowView.setTextColor(isExpanded ? 0xFF82B1FF : 0xFF7D8597);
             arrowView.setTextSize(TypedValue.COMPLEX_UNIT_SP, 10f);
             arrowView.setPadding(dp(4), 0, dp(4), 0);
-            titleCol.addView(arrowView);
+            titleRow.addView(arrowView);
 
-            mainRow.addView(titleCol, new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f));
+            centerCol.addView(titleRow);
 
-            // Color Override Chip (Global vs Propio)
+            // Row 2: Color Override Chip
             LinearLayout colorChip = new LinearLayout(this);
             colorChip.setOrientation(LinearLayout.HORIZONTAL);
             colorChip.setGravity(Gravity.CENTER_VERTICAL);
-            colorChip.setPadding(dp(8), dp(6), dp(10), dp(6));
+            colorChip.setPadding(dp(7), dp(4), dp(9), dp(4));
             colorChip.setBackground(roundRect(
                     cc.useCustomColor ? 0xFF263248 : 0xFF1E1E20,
-                    dp(14),
+                    dp(12),
                     1,
                     cc.useCustomColor ? 0xFF3367B8 : 0xFF38383B
             ));
@@ -1046,18 +1094,18 @@ public class MainActivity extends Activity {
                 android.graphics.drawable.GradientDrawable gd = new android.graphics.drawable.GradientDrawable(
                         android.graphics.drawable.GradientDrawable.Orientation.LEFT_RIGHT,
                         new int[]{cc.customGradientStart | 0xFF000000, cc.customGradientEnd | 0xFF000000});
-                gd.setCornerRadius(dp(7));
+                gd.setCornerRadius(dp(6));
                 miniDot.setBackground(gd);
             } else if (isGlobGrad) {
                 android.graphics.drawable.GradientDrawable gd = new android.graphics.drawable.GradientDrawable(
                         android.graphics.drawable.GradientDrawable.Orientation.LEFT_RIGHT,
                         new int[]{mConfig.gradientStartColor | 0xFF000000, mConfig.gradientEndColor | 0xFF000000});
-                gd.setCornerRadius(dp(7));
+                gd.setCornerRadius(dp(6));
                 miniDot.setBackground(gd);
             } else {
-                miniDot.setBackground(roundRect(resolvedRgb | 0xFF000000, dp(7), 1, 0x66FFFFFF));
+                miniDot.setBackground(roundRect(resolvedRgb | 0xFF000000, dp(6), 1, 0x66FFFFFF));
             }
-            colorChip.addView(miniDot, new LinearLayout.LayoutParams(dp(14), dp(14)));
+            colorChip.addView(miniDot, new LinearLayout.LayoutParams(dp(12), dp(12)));
 
             TextView chipText = new TextView(this);
             String chipLabel;
@@ -1074,20 +1122,24 @@ public class MainActivity extends Activity {
             }
             chipText.setText(chipLabel);
             chipText.setTextColor(cc.useCustomColor ? 0xFF90CAF9 : 0xFFB0B8C8);
-            chipText.setTextSize(TypedValue.COMPLEX_UNIT_SP, 11.5f);
+            chipText.setTextSize(TypedValue.COMPLEX_UNIT_SP, isCompact ? 10.5f : 11.5f);
             chipText.setTypeface(Typeface.DEFAULT_BOLD);
+            chipText.setMaxLines(1);
+            chipText.setEllipsize(TextUtils.TruncateAt.END);
             colorChip.addView(chipText);
 
             LinearLayout.LayoutParams chipLp = new LinearLayout.LayoutParams(
                     ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT);
-            chipLp.rightMargin = dp(8);
+            chipLp.topMargin = dp(4);
             colorChip.setOnClickListener(new View.OnClickListener() {
                 @Override
                 public void onClick(View v) {
                     showIndividualCategoryColorPanel(meta, cc);
                 }
             });
-            mainRow.addView(colorChip, chipLp);
+            centerCol.addView(colorChip, chipLp);
+
+            mainRow.addView(centerCol, new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f));
 
             // Individual ON/OFF One UI Switch
             OneUISwitch sw = new OneUISwitch(this);
@@ -1188,7 +1240,8 @@ public class MainActivity extends Activity {
         LinearLayout card = new LinearLayout(this);
         card.setOrientation(LinearLayout.VERTICAL);
         card.setBackground(roundRect(0xFF232325, dp(28), 1, 0xFF38383B));
-        int pad = dp(18);
+        boolean isCompact = isCompactScreen();
+        int pad = isCompact ? dp(14) : dp(18);
         card.setPadding(pad, pad, pad, pad);
         scroll.addView(card, new FrameLayout.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT));
@@ -1198,10 +1251,12 @@ public class MainActivity extends Activity {
         titleRow.setOrientation(LinearLayout.HORIZONTAL);
         titleRow.setGravity(Gravity.CENTER_VERTICAL);
 
+        int iconSize = isCompact ? dp(42) : dp(48);
+        int iconInnerSize = isCompact ? dp(24) : dp(28);
         final View headerIconBg = new View(this);
-        headerIconBg.setBackground(roundRect(meta.accentColor, dp(14), dp(1), 0x33FFFFFF));
+        headerIconBg.setBackground(roundRect(meta.accentColor, isCompact ? dp(12) : dp(14), dp(1), 0x33FFFFFF));
         FrameLayout iconWrap = new FrameLayout(this);
-        iconWrap.addView(headerIconBg, new FrameLayout.LayoutParams(dp(48), dp(48)));
+        iconWrap.addView(headerIconBg, new FrameLayout.LayoutParams(iconSize, iconSize));
 
         ImageView headerIconImg = new ImageView(this);
         int resId = meta.getIconResId(this);
@@ -1210,11 +1265,11 @@ public class MainActivity extends Activity {
         }
         headerIconImg.setScaleType(ImageView.ScaleType.FIT_CENTER);
         headerIconImg.setColorFilter(new PorterDuffColorFilter(0xFFFFFFFF, PorterDuff.Mode.SRC_IN));
-        FrameLayout.LayoutParams imgLp = new FrameLayout.LayoutParams(dp(28), dp(28));
+        FrameLayout.LayoutParams imgLp = new FrameLayout.LayoutParams(iconInnerSize, iconInnerSize);
         imgLp.gravity = Gravity.CENTER;
         iconWrap.addView(headerIconImg, imgLp);
 
-        titleRow.addView(iconWrap, new LinearLayout.LayoutParams(dp(48), dp(48)));
+        titleRow.addView(iconWrap, new LinearLayout.LayoutParams(iconSize, iconSize));
 
         LinearLayout titleCol = new LinearLayout(this);
         titleCol.setOrientation(LinearLayout.VERTICAL);
@@ -1225,12 +1280,16 @@ public class MainActivity extends Activity {
         titleTxt.setTextColor(0xFFFFFFFF);
         titleTxt.setTextSize(TypedValue.COMPLEX_UNIT_SP, 15f);
         titleTxt.setTypeface(Typeface.create("sans-serif-medium", Typeface.BOLD));
+        titleTxt.setMaxLines(2);
+        titleTxt.setEllipsize(TextUtils.TruncateAt.END);
         titleCol.addView(titleTxt);
 
         TextView subTxt = new TextView(this);
         subTxt.setText(I18n.get(this, "individual_color_title"));
         subTxt.setTextColor(0xFF82B1FF);
         subTxt.setTextSize(TypedValue.COMPLEX_UNIT_SP, 11.5f);
+        subTxt.setMaxLines(2);
+        subTxt.setEllipsize(TextUtils.TruncateAt.END);
         titleCol.addView(subTxt);
 
         titleRow.addView(titleCol, new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f));
@@ -1302,27 +1361,39 @@ public class MainActivity extends Activity {
         final Button btnTabFixed = new Button(this);
         btnTabFixed.setAllCaps(false);
         btnTabFixed.setText(I18n.get(this, "tab_solid"));
-        btnTabFixed.setTextSize(TypedValue.COMPLEX_UNIT_SP, 12.5f);
+        btnTabFixed.setTextSize(TypedValue.COMPLEX_UNIT_SP, isCompact ? 11.5f : 12.5f);
+        btnTabFixed.setMinimumHeight(dp(40));
+        btnTabFixed.setPadding(dp(4), dp(6), dp(4), dp(6));
+        btnTabFixed.setMaxLines(2);
+        btnTabFixed.setEllipsize(TextUtils.TruncateAt.END);
 
         View tabSpacer1 = new View(this);
 
         final Button btnTabWallpaper = new Button(this);
         btnTabWallpaper.setAllCaps(false);
         btnTabWallpaper.setText(I18n.get(this, "tab_wallpaper"));
-        btnTabWallpaper.setTextSize(TypedValue.COMPLEX_UNIT_SP, 12f);
+        btnTabWallpaper.setTextSize(TypedValue.COMPLEX_UNIT_SP, isCompact ? 11f : 12f);
+        btnTabWallpaper.setMinimumHeight(dp(40));
+        btnTabWallpaper.setPadding(dp(4), dp(6), dp(4), dp(6));
+        btnTabWallpaper.setMaxLines(2);
+        btnTabWallpaper.setEllipsize(TextUtils.TruncateAt.END);
 
         View tabSpacer2 = new View(this);
 
         final Button btnTabGradient = new Button(this);
         btnTabGradient.setAllCaps(false);
         btnTabGradient.setText(I18n.get(this, "tab_gradient"));
-        btnTabGradient.setTextSize(TypedValue.COMPLEX_UNIT_SP, 12.5f);
+        btnTabGradient.setTextSize(TypedValue.COMPLEX_UNIT_SP, isCompact ? 11.5f : 12.5f);
+        btnTabGradient.setMinimumHeight(dp(40));
+        btnTabGradient.setPadding(dp(4), dp(6), dp(4), dp(6));
+        btnTabGradient.setMaxLines(2);
+        btnTabGradient.setEllipsize(TextUtils.TruncateAt.END);
 
-        modeRow.addView(btnTabFixed, new LinearLayout.LayoutParams(0, dp(42), 1f));
-        modeRow.addView(tabSpacer1, new LinearLayout.LayoutParams(dp(6), 1));
-        modeRow.addView(btnTabWallpaper, new LinearLayout.LayoutParams(0, dp(42), 1f));
-        modeRow.addView(tabSpacer2, new LinearLayout.LayoutParams(dp(6), 1));
-        modeRow.addView(btnTabGradient, new LinearLayout.LayoutParams(0, dp(42), 1f));
+        modeRow.addView(btnTabFixed, new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f));
+        modeRow.addView(tabSpacer1, new LinearLayout.LayoutParams(dp(4), 1));
+        modeRow.addView(btnTabWallpaper, new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f));
+        modeRow.addView(tabSpacer2, new LinearLayout.LayoutParams(dp(4), 1));
+        modeRow.addView(btnTabGradient, new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f));
         card.addView(modeRow, modeRowLp);
 
         // 5. Container A: Fixed Palette Grid
@@ -1437,12 +1508,14 @@ public class MainActivity extends Activity {
         LinearLayout subtabsRow = new LinearLayout(this);
         subtabsRow.setOrientation(LinearLayout.HORIZONTAL);
         LinearLayout.LayoutParams stlp = new LinearLayout.LayoutParams(
-                ViewGroup.LayoutParams.MATCH_PARENT, dp(40));
+                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT);
         stlp.bottomMargin = dp(10);
 
         final LinearLayout btnDialogGradStart = new LinearLayout(this);
         btnDialogGradStart.setOrientation(LinearLayout.HORIZONTAL);
         btnDialogGradStart.setGravity(Gravity.CENTER);
+        btnDialogGradStart.setMinimumHeight(dp(40));
+        btnDialogGradStart.setPadding(dp(8), dp(6), dp(8), dp(6));
         final View dotDialogGradStart = new View(this);
         btnDialogGradStart.addView(dotDialogGradStart, new LinearLayout.LayoutParams(dp(14), dp(14)));
         TextView txtDGradStart = new TextView(this);
@@ -1450,6 +1523,8 @@ public class MainActivity extends Activity {
         txtDGradStart.setTextColor(0xFFFFFFFF);
         txtDGradStart.setTextSize(TypedValue.COMPLEX_UNIT_SP, 12.5f);
         txtDGradStart.setTypeface(Typeface.create("sans-serif-medium", Typeface.BOLD));
+        txtDGradStart.setSingleLine(true);
+        txtDGradStart.setEllipsize(TextUtils.TruncateAt.END);
         btnDialogGradStart.addView(txtDGradStart);
 
         View dSubGap = new View(this);
@@ -1457,6 +1532,8 @@ public class MainActivity extends Activity {
         final LinearLayout btnDialogGradEnd = new LinearLayout(this);
         btnDialogGradEnd.setOrientation(LinearLayout.HORIZONTAL);
         btnDialogGradEnd.setGravity(Gravity.CENTER);
+        btnDialogGradEnd.setMinimumHeight(dp(40));
+        btnDialogGradEnd.setPadding(dp(8), dp(6), dp(8), dp(6));
         final View dotDialogGradEnd = new View(this);
         btnDialogGradEnd.addView(dotDialogGradEnd, new LinearLayout.LayoutParams(dp(14), dp(14)));
         TextView txtDGradEnd = new TextView(this);
@@ -1464,11 +1541,13 @@ public class MainActivity extends Activity {
         txtDGradEnd.setTextColor(0xFFFFFFFF);
         txtDGradEnd.setTextSize(TypedValue.COMPLEX_UNIT_SP, 12.5f);
         txtDGradEnd.setTypeface(Typeface.create("sans-serif-medium", Typeface.BOLD));
+        txtDGradEnd.setSingleLine(true);
+        txtDGradEnd.setEllipsize(TextUtils.TruncateAt.END);
         btnDialogGradEnd.addView(txtDGradEnd);
 
-        subtabsRow.addView(btnDialogGradStart, new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.MATCH_PARENT, 1f));
+        subtabsRow.addView(btnDialogGradStart, new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f));
         subtabsRow.addView(dSubGap, new LinearLayout.LayoutParams(dp(8), 1));
-        subtabsRow.addView(btnDialogGradEnd, new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.MATCH_PARENT, 1f));
+        subtabsRow.addView(btnDialogGradEnd, new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f));
         gradContainer.addView(subtabsRow, stlp);
 
         // Gradient preset palette grid
@@ -1803,7 +1882,7 @@ public class MainActivity extends Activity {
         actionsRow.setOrientation(LinearLayout.HORIZONTAL);
         actionsRow.setGravity(Gravity.CENTER_VERTICAL);
         LinearLayout.LayoutParams actionsLp = new LinearLayout.LayoutParams(
-                ViewGroup.LayoutParams.MATCH_PARENT, dp(44));
+                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT);
         actionsLp.topMargin = dp(14);
 
         Button btnAdvanced = new Button(this);
@@ -1811,6 +1890,10 @@ public class MainActivity extends Activity {
         btnAdvanced.setText(I18n.get(this, "btn_advanced"));
         btnAdvanced.setTextColor(0xFFFFFFFF);
         btnAdvanced.setTextSize(TypedValue.COMPLEX_UNIT_SP, 12.5f);
+        btnAdvanced.setMinimumHeight(dp(40));
+        btnAdvanced.setPadding(dp(4), dp(4), dp(4), dp(4));
+        btnAdvanced.setSingleLine(true);
+        btnAdvanced.setEllipsize(TextUtils.TruncateAt.END);
         btnAdvanced.setBackground(roundRect(0xFF2E2E32, dp(14), 1, 0xFF45454A));
 
         View s1 = new View(this);
@@ -1820,6 +1903,10 @@ public class MainActivity extends Activity {
         btnCancel.setText(I18n.get(this, "cancel"));
         btnCancel.setTextColor(0xFFB0B8C8);
         btnCancel.setTextSize(TypedValue.COMPLEX_UNIT_SP, 12.5f);
+        btnCancel.setMinimumHeight(dp(40));
+        btnCancel.setPadding(dp(4), dp(4), dp(4), dp(4));
+        btnCancel.setSingleLine(true);
+        btnCancel.setEllipsize(TextUtils.TruncateAt.END);
         btnCancel.setBackground(roundRect(0xFF232325, dp(14), 1, 0xFF38383B));
 
         View s2 = new View(this);
@@ -1830,13 +1917,17 @@ public class MainActivity extends Activity {
         btnApply.setTextColor(0xFFFFFFFF);
         btnApply.setTextSize(TypedValue.COMPLEX_UNIT_SP, 13.5f);
         btnApply.setTypeface(Typeface.DEFAULT_BOLD);
+        btnApply.setMinimumHeight(dp(40));
+        btnApply.setPadding(dp(4), dp(4), dp(4), dp(4));
+        btnApply.setSingleLine(true);
+        btnApply.setEllipsize(TextUtils.TruncateAt.END);
         btnApply.setBackground(roundRect(0xFF1477FF, dp(14), 1, 0xFF3367B8));
 
-        actionsRow.addView(btnAdvanced, new LinearLayout.LayoutParams(0, dp(44), 1.05f));
+        actionsRow.addView(btnAdvanced, new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1.05f));
         actionsRow.addView(s1, new LinearLayout.LayoutParams(dp(6), 1));
-        actionsRow.addView(btnCancel, new LinearLayout.LayoutParams(0, dp(44), 0.95f));
+        actionsRow.addView(btnCancel, new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 0.95f));
         actionsRow.addView(s2, new LinearLayout.LayoutParams(dp(6), 1));
-        actionsRow.addView(btnApply, new LinearLayout.LayoutParams(0, dp(44), 1.15f));
+        actionsRow.addView(btnApply, new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1.15f));
         card.addView(actionsRow, actionsLp);
 
         btnAdvanced.setOnClickListener(new View.OnClickListener() {
@@ -2121,11 +2212,13 @@ public class MainActivity extends Activity {
     private LinearLayout createSectionCard() {
         LinearLayout card = new LinearLayout(this);
         card.setOrientation(LinearLayout.VERTICAL);
-        card.setPadding(dp(18), dp(18), dp(18), dp(18));
+        boolean isCompact = isCompactScreen();
+        int pad = isCompact ? dp(14) : dp(18);
+        card.setPadding(pad, pad, pad, pad);
         card.setBackground(roundRect(0xFF2B2B2D, dp(26), 1, 0xFF38383B));
         LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT);
-        lp.bottomMargin = dp(14);
+        lp.bottomMargin = isCompact ? dp(10) : dp(14);
         card.setLayoutParams(lp);
         return card;
     }
@@ -2163,11 +2256,12 @@ public class MainActivity extends Activity {
         }
     }
 
-    private FrameLayout createCategoryIconBadge(ConfigManager.CategoryMeta meta, ConfigManager.CategoryConfig cc, int resolvedRgb) {
+    private FrameLayout createCategoryIconBadge(ConfigManager.CategoryMeta meta, ConfigManager.CategoryConfig cc, int resolvedRgb, int sizePx) {
         FrameLayout iconWrap = new FrameLayout(this);
         View iconBg = new View(this);
-        iconBg.setBackground(createCategoryIconBackground(cc, resolvedRgb, dp(14)));
-        iconWrap.addView(iconBg, new FrameLayout.LayoutParams(dp(48), dp(48)));
+        int radius = Math.round(sizePx * (14f / 48f));
+        iconBg.setBackground(createCategoryIconBackground(cc, resolvedRgb, radius));
+        iconWrap.addView(iconBg, new FrameLayout.LayoutParams(sizePx, sizePx));
 
         ImageView iconImg = new ImageView(this);
         int resId = meta.getIconResId(this);
@@ -2176,7 +2270,8 @@ public class MainActivity extends Activity {
         }
         iconImg.setScaleType(ImageView.ScaleType.FIT_CENTER);
         iconImg.setColorFilter(new PorterDuffColorFilter(0xFFFFFFFF, PorterDuff.Mode.SRC_IN));
-        FrameLayout.LayoutParams imgLp = new FrameLayout.LayoutParams(dp(28), dp(28));
+        int innerIconSize = Math.round(sizePx * (28f / 48f));
+        FrameLayout.LayoutParams imgLp = new FrameLayout.LayoutParams(innerIconSize, innerIconSize);
         imgLp.gravity = Gravity.CENTER;
         iconWrap.addView(iconImg, imgLp);
 
@@ -2186,8 +2281,17 @@ public class MainActivity extends Activity {
         return iconWrap;
     }
 
+    private FrameLayout createCategoryIconBadge(ConfigManager.CategoryMeta meta, ConfigManager.CategoryConfig cc, int resolvedRgb) {
+        return createCategoryIconBadge(meta, cc, resolvedRgb, dp(48));
+    }
+
     private int shiftAlpha(int color, int alpha) {
         return ((alpha & 0xFF) << 24) | (color & 0x00FFFFFF);
+    }
+
+    private boolean isCompactScreen() {
+        android.content.res.Configuration cfg = getResources().getConfiguration();
+        return cfg.screenWidthDp < 360 || cfg.fontScale > 1.15f;
     }
 
     private int dp(float dp) {
