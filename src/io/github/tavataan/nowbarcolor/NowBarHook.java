@@ -1403,32 +1403,24 @@ public class NowBarHook implements IXposedHookLoadPackage {
             w1.setAlpha(0.0f);
         }
 
-        if (p1 != null && p1.getVisibility() == View.VISIBLE && p1.getAlpha() > 0f) {
+        // o1 (nowbar_cardview_background) holds expanded card dimensions in NowBarMediaCardView.
+        // It must ALWAYS be transparent to prevent a huge rectangular island from lingering
+        // behind the card during expand/collapse transitions.
+        if (o1 != null) {
+            if (Build.VERSION.SDK_INT >= 23) {
+                o1.setForeground(null);
+            }
+            clearBlurInfo(o1);
+            setCardBackgroundColor(o1, Color.TRANSPARENT);
+        }
+
+        // p1 (stack_background_cardview) is the true Now Bar media capsule pill that animates
+        // width, height, and corner radius with Samsung's spring physics.
+        if (p1 != null) {
             if (Build.VERSION.SDK_INT >= 23) {
                 p1.setForeground(null);
             }
             setCardViewColorAndStyle(p1, targetArgb, useBlur, radius, grad);
-            if (o1 != null) {
-                if (Build.VERSION.SDK_INT >= 23) {
-                    o1.setForeground(null);
-                }
-                clearBlurInfo(o1);
-                setCardBackgroundColor(o1, Color.TRANSPARENT);
-            }
-        } else {
-            if (p1 != null) {
-                if (Build.VERSION.SDK_INT >= 23) {
-                    p1.setForeground(null);
-                }
-                clearBlurInfo(p1);
-                setCardBackgroundColor(p1, Color.TRANSPARENT);
-            }
-            if (o1 != null) {
-                if (Build.VERSION.SDK_INT >= 23) {
-                    o1.setForeground(null);
-                }
-                setCardViewColorAndStyle(o1, targetArgb, useBlur, radius, grad);
-            }
         }
     }
 
@@ -1542,8 +1534,11 @@ public class NowBarHook implements IXposedHookLoadPackage {
                     // Keep the animated lighting shader hidden and foreground null so NO light rectangle flashes!
                     if (v1 != null) v1.setAlpha(0.0f);
                     if (w1 != null) w1.setAlpha(0.0f);
-                    if (p1 != null && Build.VERSION.SDK_INT >= 23) {
-                        p1.setForeground(null);
+                    if (p1 != null) {
+                        if (Build.VERSION.SDK_INT >= 23) {
+                            p1.setForeground(null);
+                        }
+                        restoreGradientIfNeeded(p1);
                     }
                     if (Build.VERSION.SDK_INT >= 23) {
                         card.setForeground(null);
