@@ -22,23 +22,24 @@ It includes a companion configuration app built with a native One UI interface, 
 ## 🚨🔴 IMPORTANT COMPATIBILITY WARNING (READ BEFORE INSTALLING) 🔴🚨
 
 > [!CAUTION]
-> 🚨 **CRITICAL ARCHITECTURE NOTICE — ONE UI 8.0 & 8.5 vs. ONE UI 9.0+** 🚨
+> 🚨 **CRITICAL ARCHITECTURE & `AOD_Service` BUILD REQUIREMENT — ONE UI 8.0 / 8.5 vs. ONE UI 9.0+** 🚨
 >
-> **Now Bar Color** was engineered specifically targeting Samsung's **`AODService` (`com.samsung.android.app.aodservice` v8.9.65.48)** from **One UI 9**.
->
-> - 🔴 **Running One UI 8.0 or One UI 8.5? (SUITE REQUIRED):** Lower One UI versions do **NOT** include the One UI 9 `AODService` natively. Installing `NowBarColor.apk` alone will have no effect on One UI 8.x. You **MUST** flash the **`NowBar_LockScreen_Suite.zip`** All-in-One module (via **KernelSU, Magisk, or APatch**), which installs and stabilizes everything out of the box on the first boot!
-> - ⛔ **Running One UI 9.0 or newer? (SUITE NOT NEEDED):** Do **NOT** flash the Suite ZIP! Your device already runs the native One UI 9 `AODService`. Simply install **`NowBarColor.apk`** directly and activate it in LSPosed.
+> - ⚠️ **Having One UI 9 does NOT guarantee out-of-the-box compatibility:** Samsung's **`AOD_Service` (`com.samsung.android.app.aodservice`)** changes drastically across different device branches, models, and firmware builds.
+> - 🔴 **Mandatory Base `AOD_Service` Build (`896548000`):** It is **strictly mandatory** to run the exact same base build of `AOD_Service` used to develop this module—extracted from the **Galaxy S26 FE**, build **`896548000`** (`v8.9.65.48`). Running any other `AOD_Service` variant or branch will cause graphical glitches in the capsule or prevent the module from working entirely.
+> - 🔴 **Running One UI 8.0 or One UI 8.5? (INSTALL THE FULL SUITE):** Users on One UI 8.0 and 8.5 **MUST** flash the complete **`NowBar_LockScreen_Suite.zip`** All-in-One root module (via **KernelSU, Magisk, or APatch**), which already includes the required S26 FE `AOD_Service` (`896548000`), companion One UI 9 lock screen apps, `LockScreenFix`, and `NowBarColor` v1.3.0 pre-activated out of the box.
+> - 🔴 **Running One UI 9.0+ (Latest System Version)? (INSTALL THE STANDALONE `AOD_Service.apk`):** Users on One UI 9.0+ do **NOT** need the full Suite ZIP, but **MUST** install the standalone **`AOD_Service.apk`** (extracted from the **S26 FE**, build **`896548000`**) provided in this repository alongside **`NowBarColor.apk`**.
 
 ---
 
 ## Download
 
-All official files are available on the [Releases page](https://github.com/TAVATAAN/OneUI-Now-Bar-Color/releases/tag/3-1.2.0):
+All official files are available on the [Releases page](https://github.com/TAVATAAN/OneUI-Now-Bar-Color/releases/tag/4-1.3.0):
 
-| File | Target One UI Version | Type | Direct Download |
+| File | Target One UI Version | Description / Build | Direct Download |
 |---|---|---|---|
-| **`NowBarColor.apk`** | **One UI 9.0+** *(Standalone)* | LSPosed APK | [Download NowBarColor.apk (v1.2.0)](https://github.com/TAVATAAN/OneUI-Now-Bar-Color/releases/download/3-1.2.0/NowBarColor.apk) |
-| 🚨 **`NowBar_LockScreen_Suite.zip`** | 🔴 **One UI 8.0 & One UI 8.5 ONLY** | All-in-One Root Module *(KernelSU / Magisk / APatch)* | [Download NowBar_LockScreen_Suite.zip (v1.2.0)](https://github.com/TAVATAAN/OneUI-Now-Bar-Color/releases/download/3-1.2.0/NowBar_LockScreen_Suite.zip) |
+| **`NowBarColor.apk`** | **All Supported Versions** *(Standalone LSPosed Module)* | Main Now Bar Color v1.3.0 (`versionCode 4`) APK | [Download NowBarColor.apk (v1.3.0)](https://github.com/TAVATAAN/OneUI-Now-Bar-Color/releases/download/4-1.3.0/NowBarColor.apk) |
+| **`AOD_Service.apk`** | 🔴 **One UI 9.0+ (Mandatory Base App)** | Extracted from **Galaxy S26 FE** — Build **`896548000`** (`v8.9.65.48`) | [Download AOD_Service.apk (896548000)](https://github.com/TAVATAAN/OneUI-Now-Bar-Color/releases/download/4-1.3.0/AOD_Service.apk) |
+| 🚨 **`NowBar_LockScreen_Suite.zip`** | 🔴 **One UI 8.0 & One UI 8.5 ONLY** | All-in-One Root Module *(KernelSU / Magisk / APatch)* with `NowBarColor` v1.3.0 + `LockScreenFix` v2.1.7 + S26 FE `AOD_Service` (`896548000`) | [Download NowBar_LockScreen_Suite.zip (v1.3.0)](https://github.com/TAVATAAN/OneUI-Now-Bar-Color/releases/download/4-1.3.0/NowBar_LockScreen_Suite.zip) |
 
 ---
 
@@ -46,32 +47,40 @@ All official files are available on the [Releases page](https://github.com/TAVAT
 
 ### 🔴 Option A: For One UI 8.0 & One UI 8.5 Devices (1-Step All-in-One Suite)
 
-🚨 **Mandatory for One UI 8.0 / 8.5:** We have packaged a complete, ready-to-use **All-in-One Suite (`NowBar_LockScreen_Suite.zip`)** so everything works immediately on the very first installation without manual setup.
+🚨 **Mandatory for One UI 8.0 / 8.5:** Users on One UI 8.0 and 8.5 must install the complete **All-in-One Suite (`NowBar_LockScreen_Suite.zip`)** so the required S26 FE `AOD_Service` (`896548000`) and all lock screen dependencies work immediately on the very first installation without manual setup.
 
 #### What is included inside `NowBar_LockScreen_Suite.zip`?
-- **One UI 9 Core Lock Screen & AOD Apps** (`AODService` v8.9.65.48, `DressRoom`, `GalleryWidget`, and `SamsungGallery`) pre-configured for `priv-app` mounting.
+- **One UI 9 Core Lock Screen & AOD Apps** (`AOD_Service` build **`896548000`** / `v8.9.65.48` extracted from **Galaxy S26 FE**, plus `DressRoom`, `GalleryWidget`, and `SamsungGallery`) pre-configured for `priv-app` mounting.
 - **Good Lock Companion Plugin** (`LockStar` v9.0.00.5) automatically installed with required system permissions.
-- **`LockScreenFix` (LSPosed Module by TAVATAAN):** Stabilizes all ported One UI 9 lock screen, AOD, and gallery components on One UI 8.0 / 8.5.
-- **`NowBarColor` v1.2.0 (LSPosed Module):** Full Now Bar background customization app and engine.
-- **Automatic LSPosed SQLite Activation & Permissions:** Automatically registers and enables both `NowBarColor` and `LockScreenFix` directly inside LSPosed's configuration database (`modules_config.db`) with all required target scopes and runtime permissions (`WRITE_SETTINGS`, storage, calendar).
+- **`LockScreenFix_OU9` v2.1.7 (LSPosed Module by TAVATAAN):** Latest build that stabilizes all ported One UI 9 lock screen, AOD, media controls, and gallery components on One UI 8.0 / 8.5.
+- **`NowBarColor` v1.3.0 (LSPosed Module):** Full Now Bar background customization app and engine.
+- **Automatic LSPosed SQLite Activation & Permissions:** Automatically registers and enables both `NowBarColor` and `LockScreenFix_OU9` directly inside LSPosed's configuration database (`modules_config.db`) with all required target scopes (`com.android.systemui`, `com.samsung.android.app.aodservice`, etc.) and runtime permissions.
 
 #### Steps for One UI 8.0 & 8.5:
-1. Ensure **LSPosed Framework** (Zygisk or JingMatrix fork) is installed on your rooted device (**KernelSU**, **Magisk v26+**, or **APatch**).
-2. Download [**`NowBar_LockScreen_Suite.zip`**](https://github.com/TAVATAAN/OneUI-Now-Bar-Color/releases/download/3-1.2.0/NowBar_LockScreen_Suite.zip).
+1. Ensure **LSPosed Framework** (Zygisk or JingMatrix/Vector fork) is installed on your rooted device (**KernelSU**, **Magisk v26+**, or **APatch**).
+2. Download [**`NowBar_LockScreen_Suite.zip`**](https://github.com/TAVATAAN/OneUI-Now-Bar-Color/releases/download/4-1.3.0/NowBar_LockScreen_Suite.zip).
 3. Open **KernelSU**, **Magisk**, or **APatch** Manager, go to the **Modules** tab, and flash `NowBar_LockScreen_Suite.zip`.
 4. **Reboot your device.**
-5. **Done!** Both **`NowBarColor`** and **`LockScreenFix`** are **automatically activated in LSPosed** upon boot—**you do NOT need to enable them manually in LSPosed Manager**. Simply open the **Now Bar Color** app from your app drawer and customize your capsules!
+5. **Done!** Both **`NowBarColor`** and **`LockScreenFix_OU9`** are **automatically activated in LSPosed** upon boot—**you do NOT need to enable them manually in LSPosed Manager**. Simply open the **Now Bar Color** app from your app drawer and customize your capsules!
 
 ---
 
-### Option B: For One UI 9.0+ Devices (Standalone APK)
+### 🔴 Option B: For One UI 9.0+ Devices (`AOD_Service.apk` + `NowBarColor.apk`)
 
-⛔ **Reminder:** If your ROM is already **One UI 9.0 or higher**, you do **NOT** need `NowBar_LockScreen_Suite.zip`.
+⚠️ **Important for One UI 9.0+ Users:** Being on One UI 9 does **not** guarantee immediate compatibility because `AOD_Service` varies drastically depending on each device's firmware branch. You **must** install the exact base **`AOD_Service.apk`** used to develop the module (extracted from the **Galaxy S26 FE**, build **`896548000`**), as any other variant will cause graphical glitches in the capsule or prevent the module from functioning.
 
-1. Download and install [**`NowBarColor.apk`**](https://github.com/TAVATAAN/OneUI-Now-Bar-Color/releases/download/3-1.2.0/NowBarColor.apk) (or install/update directly from LSPosed Repository).
-2. Open **LSPosed Manager** and enable **Now Bar Color** with its recommended scopes (`System UI` and `Always On Display`).
-3. Restart System UI (`su -c killall com.android.systemui`) or reboot your device.
-4. Open **Now Bar Color** from your launcher to configure your colors, gradients, blur, and per-capsule styles.
+#### Steps for One UI 9.0+:
+1. Download [**`AOD_Service.apk` (S26 FE — Build `896548000`)**](https://github.com/TAVATAAN/OneUI-Now-Bar-Color/releases/download/4-1.3.0/AOD_Service.apk) from the repository Releases and install it as an update over your system's Always On Display service.
+   > 💡 **Troubleshooting Cross-Branch Installation Failure (KernelSU):**
+   > If `AOD_Service.apk` fails to install as an update due to signature/branch verification differences across Samsung firmware branches, disable the official release check first by running the following command in a terminal or ADB shell before installing the APK:
+   > ```bash
+   > su -c "/data/adb/ksu/bin/resetprop -n ro.build.official.release false"
+   > ```
+   > Then install `AOD_Service.apk` again.
+2. Download and install [**`NowBarColor.apk` (v1.3.0)**](https://github.com/TAVATAAN/OneUI-Now-Bar-Color/releases/download/4-1.3.0/NowBarColor.apk) (or install/update directly from the LSPosed Repository).
+3. Open **LSPosed Manager** and enable **Now Bar Color** with its required scopes (`System UI` and `Always On Display`).
+4. Restart System UI (`su -c killall com.android.systemui`) or reboot your device.
+5. Open **Now Bar Color** from your launcher to configure your colors, gradients, blur, and per-capsule styles.
 
 ---
 
