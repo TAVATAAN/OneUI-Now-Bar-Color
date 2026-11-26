@@ -50,9 +50,12 @@ def main():
             shutil.rmtree(directory)
         directory.mkdir(parents=True)
     sources = sorted((BASE / 'src').rglob('*.java'))
+    runtime_jars = sorted((BASE / 'libs' / 'runtime').glob('*.jar'))
+    compile_only_jars = sorted((BASE / 'libs' / 'compile_only').glob('*.jar'))
+    javac_cp = os.pathsep.join([str(android)] + [str(j) for j in compile_only_jars + runtime_jars])
     # javac also works via the JDK compiler module on hosts lacking a javac launcher.
     javac = ['javac'] if shutil.which('javac') else ['java', 'com.sun.tools.javac.Main']
-    run(javac + ['-encoding', 'UTF-8', '-source', '8', '-target', '8', '-cp', android, '-d', classes] + sources)
+    run(javac + ['-encoding', 'UTF-8', '-source', '8', '-target', '8', '-cp', javac_cp, '-d', classes] + sources)
     print('Java compilation passed.', flush=True)
     if args.check_java:
         return
@@ -71,8 +74,8 @@ def main():
         for path in sorted((classes / 'de').rglob('*.class')):
             archive.write(path, path.relative_to(classes))
     app_classes = sorted((classes / 'io').rglob('*.class'))
-    run([tool('d8'), '--min-api', '31', '--lib', android, '--classpath', stubs,
-         '--output', dex] + app_classes)
+    run([tool('d8'), '--release', '--min-api', '31', '--lib', android, '--classpath', stubs,
+         '--output', dex] + app_classes + runtime_jars)
     unsigned = build / 'unsigned.apk'
     aligned = build / 'aligned.apk'
     final = build / 'NowBarColor.apk'
@@ -80,11 +83,20 @@ def main():
          '-S', BASE / 'res', '-A', BASE / 'assets', '-I', android, '-F', unsigned])
     with zipfile.ZipFile(unsigned, 'a') as archive:
         for path in sorted(dex.glob('*.dex')):
-            archive.write(path, path.name)
+            archive.write(path, path.name, compress_type=zipfile.ZIP_DEFLATED)
+        jni_dir = BASE / 'libs' / 'jni'
+        if jni_dir.is_dir():
+            for path in sorted(jni_dir.rglob('*.so')):
+                rel = path.relative_to(jni_dir).as_posix()
+                archive.write(path, 'lib/' + rel, compress_type=zipfile.ZIP_STORED)
         for path in sorted((BASE / 'meta_xposed').iterdir()):
             if path.is_file():
                 archive.write(path, 'META-INF/xposed/' + path.name)
-    run([tool('zipalign'), '-p', '-f', '4', unsigned, aligned])
+    zipalign_bin = str(tool('zipalign'))
+    try:
+        run([zipalign_bin, '-P', '16', '-f', '4', unsigned, aligned])
+    except subprocess.CalledProcessError:
+        run([zipalign_bin, '-p', '-f', '4', unsigned, aligned])
     keystore = Path(args.keystore).expanduser().resolve()
     signing_env = os.environ.copy()
     signing_env.setdefault('NOWBAR_STORE_PASS', 'android')

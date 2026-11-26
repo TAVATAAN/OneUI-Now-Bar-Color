@@ -207,12 +207,23 @@ public class ConfigManager {
         return (alpha << 24) | (rgb & 0x00FFFFFF);
     }
 
+    /** Scales an ARGB color's alpha channel by a normalized visibility factor (0.0..1.0). */
+    public static int scaleAlpha(int argb, float factor) {
+        if (factor >= 0.999f) return argb;
+        if (factor <= 0.005f) return argb & 0x00FFFFFF;
+        int alpha = Math.max(0, Math.min(255, Math.round(((argb >>> 24) & 0xFF) * factor)));
+        return (alpha << 24) | (argb & 0x00FFFFFF);
+    }
+
     public static class Config {
         public boolean masterEnabled = true;
         public int colorMode = MODE_FIXED_COLOR;
         public int wallpaperVariant = WALLPAPER_PRIMARY;
         public int styleMode = STYLE_SOLID;
-        public int opacity = 92; // 0..100
+        public boolean hideBgOnAod = false;
+        public int opacity = 92; // Solid fill opacity 0..100
+        public int blurIntensity = OneUiBlurSpec.DEFAULT_BLUR_INTENSITY; // 0..100 -> 16px..100px
+        public int blurTintOpacity = OneUiBlurSpec.DEFAULT_TINT_OPACITY; // 25..85
         public int globalColor = 0xFF1E88E5;
         public int gradientStartColor = 0xFF1477FF;
         public int gradientEndColor = 0xFF9D4EDD;
@@ -309,6 +320,47 @@ public class ConfigManager {
             return resolveGlobalGradientArgb();
         }
 
+        public int resolveBlurRadiusPx() {
+            return OneUiBlurSpec.radiusPxFromPercent(blurIntensity);
+        }
+
+        public int resolveBlurTintOpacityForCategory(String categoryId) {
+            CategoryConfig cc = getCategory(categoryId);
+            int raw = (cc != null && cc.useCustomColor && cc.useCustomOpacity) ? cc.customOpacity : blurTintOpacity;
+            return OneUiBlurSpec.clampTintOpacity(raw);
+        }
+
+        public int resolveGlobalBlurFinalArgb(Integer liveWallpaperColor) {
+            return OneUiBlurSpec.applyTintOpacity(resolveGlobalBaseRgb(liveWallpaperColor), blurTintOpacity);
+        }
+
+        public int resolveBlurFinalArgbForCategory(String categoryId, Integer liveWallpaperColor) {
+            return OneUiBlurSpec.applyTintOpacity(
+                    resolveBaseRgbForCategory(categoryId, liveWallpaperColor),
+                    resolveBlurTintOpacityForCategory(categoryId));
+        }
+
+        public int[] resolveGlobalBlurGradientArgb() {
+            if (colorMode != MODE_GRADIENT) return null;
+            return new int[]{
+                    OneUiBlurSpec.applyTintOpacity(gradientStartColor, blurTintOpacity),
+                    OneUiBlurSpec.applyTintOpacity(gradientEndColor, blurTintOpacity)
+            };
+        }
+
+        public int[] resolveBlurGradientArgbForCategory(String categoryId) {
+            CategoryConfig cc = getCategory(categoryId);
+            if (cc.useCustomColor) {
+                if (cc.customColorMode != MODE_GRADIENT) return null;
+                int tintOp = resolveBlurTintOpacityForCategory(categoryId);
+                return new int[]{
+                        OneUiBlurSpec.applyTintOpacity(cc.customGradientStart, tintOp),
+                        OneUiBlurSpec.applyTintOpacity(cc.customGradientEnd, tintOp)
+                };
+            }
+            return resolveGlobalBlurGradientArgb();
+        }
+
         public String toJsonString() {
             try {
                 JSONObject root = new JSONObject();
@@ -316,7 +368,10 @@ public class ConfigManager {
                 root.put("colorMode", colorMode);
                 root.put("wallpaperVariant", wallpaperVariant);
                 root.put("styleMode", styleMode);
+                root.put("hideBgOnAod", hideBgOnAod);
                 root.put("opacity", opacity);
+                root.put("blurIntensity", blurIntensity);
+                root.put("blurTintOpacity", blurTintOpacity);
                 root.put("globalColor", globalColor);
                 root.put("gradientStartColor", gradientStartColor);
                 root.put("gradientEndColor", gradientEndColor);
@@ -358,7 +413,12 @@ public class ConfigManager {
                 cfg.colorMode = root.optInt("colorMode", MODE_FIXED_COLOR);
                 cfg.wallpaperVariant = root.optInt("wallpaperVariant", WALLPAPER_PRIMARY);
                 cfg.styleMode = root.optInt("styleMode", STYLE_SOLID);
+                cfg.hideBgOnAod = root.optBoolean("hideBgOnAod", false);
                 cfg.opacity = root.optInt("opacity", 92);
+                cfg.blurIntensity = OneUiBlurSpec.clampBlurIntensity(
+                        root.optInt("blurIntensity", OneUiBlurSpec.DEFAULT_BLUR_INTENSITY));
+                cfg.blurTintOpacity = OneUiBlurSpec.clampTintOpacity(
+                        root.optInt("blurTintOpacity", OneUiBlurSpec.DEFAULT_TINT_OPACITY));
                 cfg.globalColor = root.optInt("globalColor", 0xFF1E88E5);
                 cfg.gradientStartColor = root.optInt("gradientStartColor", 0xFF1477FF);
                 cfg.gradientEndColor = root.optInt("gradientEndColor", 0xFF9D4EDD);

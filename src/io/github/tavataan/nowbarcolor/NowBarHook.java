@@ -6,10 +6,14 @@ import android.content.BroadcastReceiver;
 import android.content.Context;
 import android.content.Intent;
 import android.content.IntentFilter;
+import android.content.pm.PackageInfo;
+import android.content.res.ColorStateList;
+import android.content.res.Resources;
 import android.database.ContentObserver;
 import android.graphics.Color;
 import android.net.Uri;
 import android.os.Build;
+import android.os.Bundle;
 import android.os.Handler;
 import android.os.HandlerThread;
 import android.os.Looper;
@@ -20,6 +24,7 @@ import android.view.ViewParent;
 import android.view.ViewTreeObserver;
 import java.lang.ref.WeakReference;
 import java.util.Locale;
+import android.widget.ImageView;
 import android.widget.TextView;
 
 import java.lang.reflect.Field;
@@ -39,18 +44,49 @@ import de.robv.android.xposed.XposedHelpers;
 import de.robv.android.xposed.callbacks.XC_LoadPackage;
 
 public class NowBarHook implements IXposedHookLoadPackage {
-    private static final Object[] NO_ARGUMENTS = new Object[0];
     private static final String TAG = "NowBarColorHook";
-    private static final Set<ClassLoader> HOOKED_CLASSLOADERS = Collections.synchronizedSet(new HashSet<ClassLoader>());
+    private static final Set<ClassLoader> LAYER1_CLASSLOADERS = Collections.synchronizedSet(new HashSet<ClassLoader>());
+    private static final Set<ClassLoader> LAYER2_CLASSLOADERS = Collections.synchronizedSet(new HashSet<ClassLoader>());
+    private static final Set<ClassLoader> PENDING_LAYER2_CLASSLOADERS = Collections.synchronizedSet(new HashSet<ClassLoader>());
     private static final Set<View> ACTIVE_CARDS = Collections.synchronizedSet(Collections.newSetFromMap(new WeakHashMap<View, Boolean>()));
     private static final Set<View> ACTIVE_GENUI_BLUR_VIEWS = Collections.synchronizedSet(Collections.newSetFromMap(new WeakHashMap<View, Boolean>()));
     private static final Set<View> ACTIVE_GENUI_GUIDING_VIEWS = Collections.synchronizedSet(Collections.newSetFromMap(new WeakHashMap<View, Boolean>()));
+    private static final Set<View> MEDIA_BACKDROP_SURFACES = Collections.synchronizedSet(Collections.newSetFromMap(new WeakHashMap<View, Boolean>()));
+    private static final Set<View> MEDIA_PILL_SURFACES = Collections.synchronizedSet(Collections.newSetFromMap(new WeakHashMap<View, Boolean>()));
 
     private static volatile ConfigManager.Config sConfig = null;
     private static volatile WallpaperColorHelper.PaletteResult sLivePalette = null;
     private static volatile boolean sReceiverRegistered = false;
     private static volatile Context sSysUiContext = null;
     private static volatile Handler sMainHandler = null;
+    private static volatile long sWakeUntilNs = 0L;
+    private static volatile boolean sWakeWatchArmed = false;
+    private static volatile long sLastLockDiagPushNs = 0L;
+    private static volatile long sLastAodDiagPushNs = 0L;
+    private static volatile long sLastExpandedDiagPushNs = 0L;
+    private static volatile String sHookTimeContextSource = "NONE";
+    private static volatile String sHookMapSource = "NONE";
+    private static volatile String sHookMapTarget = "none";
+    private static volatile boolean sLayer1Hooked = false;
+    private static volatile boolean sSemBlurHookInstalled = false;
+    private static volatile boolean sLayer2CoreHooked = false;
+    private static volatile int sLayer2WakeCount = 0;
+    private static volatile int sLayer3Count = 0;
+    private static volatile String sLastCardSummary = "";
+    private static volatile String sLastLockSummary = "";
+    private static volatile String sLastAodSummary = "";
+    private static volatile String sLastAodLeak = "none";
+    private static volatile String sLastExpandedLeak = "none";
+    private static volatile String sLastLockTreeDump = "";
+    private static volatile String sLastExpandedTreeDump = "";
+    private static volatile String sLastAodTreeDump = "";
+    private static volatile HookMap sHookMap = null;
+    private static volatile NowBarCardAdapter sAdapter = NowBarAdapterFactory.fallbackForSdk();
+
+    private static NowBarCardAdapter activeAdapter() {
+        NowBarCardAdapter adapter = sAdapter;
+        return adapter != null ? adapter : NowBarAdapterFactory.fallbackForSdk();
+    }
 
     // Main-thread request state; slow provider/wallpaper work runs on one worker.
     private static Handler sIoHandler;
@@ -125,15 +161,27 @@ public class NowBarHook implements IXposedHookLoadPackage {
         final MediaLayer normal = new MediaLayer();
         boolean initialized;
         boolean collapsed;
+        float aodProgress;
+        boolean hideBgOnAod;
 
         boolean capture(View card) {
             boolean nowCollapsed = isCollapsedLockscreenCapsule(card);
-            boolean changed = !initialized || collapsed != nowCollapsed;
+            float nowAodProgress = getCardAodProgress(card);
+            ConfigManager.Config cfg = sConfig;
+            boolean nowHideBgOnAod = cfg != null && cfg.hideBgOnAod;
+            boolean changed = !initialized || collapsed != nowCollapsed
+                    || hideBgOnAod != nowHideBgOnAod
+                    || Math.abs(aodProgress - nowAodProgress) > 0.001f;
             initialized = true;
             collapsed = nowCollapsed;
+            aodProgress = nowAodProgress;
+            hideBgOnAod = nowHideBgOnAod;
+            boolean inspectStackGradient = nowCollapsed && (!nowHideBgOnAod || nowAodProgress < 0.995f);
+            boolean inspectBackdrop = shouldCustomizeCatMedia();
             // Evaluate both even when another part has changed.
-            changed |= stack.capture(getViewField(card, "p1"), nowCollapsed);
-            changed |= normal.capture(getViewField(card, "o1"), nowCollapsed);
+            NowBarCardAdapter adapter = activeAdapter();
+            changed |= stack.capture(adapter.resolveMediaPillSurface(card), inspectStackGradient);
+            changed |= normal.capture(adapter.resolveMediaBackdropSurface(card), inspectBackdrop);
             return changed;
         }
     }
@@ -141,26 +189,48 @@ public class NowBarHook implements IXposedHookLoadPackage {
     private static final class MediaLayer {
         WeakReference<View> viewRef;
         WeakReference<android.graphics.drawable.Drawable> backgroundRef;
+        WeakReference<Object> blurRef;
         int visibility = -1;
         boolean hasAlpha;
+        int cardBgColor;
 
         boolean capture(View view, boolean inspectGradient) {
             View previous = viewRef == null ? null : viewRef.get();
             android.graphics.drawable.Drawable background = view == null ? null : view.getBackground();
             android.graphics.drawable.Drawable oldBackground = backgroundRef == null ? null : backgroundRef.get();
+            Object blurInfo = CapsuleStyle.getBlurInfo(view);
+            Object oldBlurInfo = blurRef == null ? null : blurRef.get();
             int nextVisibility = view == null ? -1 : view.getVisibility();
             boolean nextAlpha = view != null && view.getAlpha() > 0f;
+            int nextCardBg = inspectGradient ? readCardBackgroundColor(view) : 0;
             boolean changed = previous != view || oldBackground != background
-                    || visibility != nextVisibility || hasAlpha != nextAlpha;
+                    || oldBlurInfo != blurInfo
+                    || visibility != nextVisibility || hasAlpha != nextAlpha
+                    || (inspectGradient && cardBgColor != nextCardBg);
             if (previous != view) viewRef = view == null ? null : new WeakReference<>(view);
             if (oldBackground != background) backgroundRef = background == null ? null : new WeakReference<>(background);
+            if (oldBlurInfo != blurInfo) blurRef = blurInfo == null ? null : new WeakReference<>(blurInfo);
             visibility = nextVisibility;
             hasAlpha = nextAlpha;
+            cardBgColor = nextCardBg;
             return changed || (inspectGradient && CapsuleStyle.needsGradientRepair(view));
         }
     }
 
-    /** Coalesce requests. Media additionally observes state on existing frames only. */
+    private static int readCardBackgroundColor(View view) {
+        if (view == null) return 0;
+        Method getter = ReflectionCache.method(view.getClass(), "getCardBackgroundColor");
+        if (getter == null) return 0;
+        try {
+            Object res = getter.invoke(view);
+            if (res instanceof android.content.res.ColorStateList) {
+                return ((android.content.res.ColorStateList) res).getDefaultColor();
+            }
+        } catch (Throwable ignored) {}
+        return 0;
+    }
+
+    /** Coalesce requests. Observes pre-draw state continuously on media or briefly during screen-wake transitions. */
     private static final class CardUpdate implements ViewTreeObserver.OnPreDrawListener,
             View.OnAttachStateChangeListener {
         final WeakReference<View> cardRef;
@@ -168,10 +238,13 @@ public class NowBarHook implements IXposedHookLoadPackage {
         boolean applying;
         boolean dirty;
         final MediaPresentation media;
+        final MediaLayer wakeSurface;
 
         CardUpdate(View card) {
             cardRef = new WeakReference<>(card);
-            media = card.getClass().getName().endsWith("NowBarMediaCardView") ? new MediaPresentation() : null;
+            boolean isMedia = card.getClass().getName().endsWith("NowBarMediaCardView");
+            media = isMedia ? new MediaPresentation() : null;
+            wakeSurface = isMedia ? null : new MediaLayer();
             card.addOnAttachStateChangeListener(this);
         }
 
@@ -208,8 +281,18 @@ public class NowBarHook implements IXposedHookLoadPackage {
                 remove();
                 return true;
             }
-            if (media == null) remove();
-            boolean changed = media != null && media.capture(card);
+            boolean inWakeWatch = isWakeTransitionWatchActive();
+            if (media == null && !inWakeWatch) remove();
+
+            boolean changed = false;
+            if (media != null) {
+                changed = media.capture(card);
+            } else if (inWakeWatch && wakeSurface != null) {
+                View surface = resolveStandardWakeSurface(card);
+                if (surface != null) {
+                    changed = wakeSurface.capture(surface, true);
+                }
+            }
             if (!dirty && !changed) return true;
             dirty = false;
             applying = true;
@@ -218,12 +301,40 @@ public class NowBarHook implements IXposedHookLoadPackage {
                 applying = false;
                 // Ignore our own drawable changes on the next frame.
                 if (media != null) media.capture(card);
+                else if (inWakeWatch && wakeSurface != null) {
+                    View surface = resolveStandardWakeSurface(card);
+                    if (surface != null) wakeSurface.capture(surface, true);
+                }
             }
             return true;
         }
 
         @Override public void onViewAttachedToWindow(View view) { request(); }
         @Override public void onViewDetachedFromWindow(View view) { remove(); }
+    }
+
+    private static View resolveStandardWakeSurface(View card) {
+        if (card == null) return null;
+        NowBarCardAdapter adapter = activeAdapter();
+        if (card.getClass().getName().endsWith("NowBarBriefCardView")) {
+            View briefBg = adapter.resolveBriefBackgroundView(card);
+            if (briefBg != null) return briefBg;
+        }
+        return adapter.resolveCardContainer(card);
+    }
+
+    private static boolean isWakeTransitionWatchActive() {
+        if (!sWakeWatchArmed) return false;
+        if ((sWakeUntilNs - System.nanoTime()) > 0L) {
+            return true;
+        }
+        sWakeWatchArmed = false;
+        return false;
+    }
+
+    private static void armWakeTransitionWatch(long durationMs) {
+        sWakeUntilNs = System.nanoTime() + durationMs * 1_000_000L;
+        sWakeWatchArmed = true;
     }
 
     private static void requestCardUpdate(final View card) {
@@ -283,11 +394,14 @@ public class NowBarHook implements IXposedHookLoadPackage {
                             String name = (String) param.args[0];
                             if ("com.samsung.android.app.facewidget.pages.music.FaceWidgetMusicViewModel".equals(name)
                                     || "com.samsung.android.app.facewidget.presentation.NowBarBriefCardView".equals(name)
-                                    || "aod.g92".equals(name)) {
+                                    || "com.samsung.android.app.facewidget.presentation.NowBarMediaCardView".equals(name)
+                                    || "com.samsung.android.app.facewidget.presentation.NowBarOngoingCardView".equals(name)
+                                    || "com.samsung.android.app.facewidget.presentation.NowBarExternalViewCardView".equals(name)
+                                    || "com.samsung.android.app.facewidget.utils.NowBarCardStackView".equals(name)) {
                                 Class<?> cls = (Class<?>) param.getResult();
                                 if (cls != null) {
                                     final ClassLoader cl = cls.getClassLoader();
-                                    if (cl != null && !HOOKED_CLASSLOADERS.contains(cl)) {
+                                    if (cl != null && (!LAYER1_CLASSLOADERS.contains(cl) || !LAYER2_CLASSLOADERS.contains(cl))) {
                                         Handler h = getMainHandler();
                                         if (h != null) {
                                             h.post(new Runnable() {
@@ -324,39 +438,179 @@ public class NowBarHook implements IXposedHookLoadPackage {
         } catch (Throwable ignored) {}
     }
 
-    private synchronized void hookAodPluginClassLoader(final ClassLoader cl) {
-        if (cl == null || !HOOKED_CLASSLOADERS.add(cl)) {
+    private static Context resolveEarlyContext() {
+        if (sSysUiContext != null) {
+            if ("NONE".equals(sHookTimeContextSource)) sHookTimeContextSource = "sSysUiContext";
+            return sSysUiContext;
+        }
+        try {
+            Class<?> at = Class.forName("android.app.ActivityThread");
+            Method curApp = at.getMethod("currentApplication");
+            Object app = curApp.invoke(null);
+            if (app instanceof Context) {
+                Context ctx = ((Context) app).getApplicationContext() != null
+                        ? ((Context) app).getApplicationContext() : (Context) app;
+                sSysUiContext = ctx;
+                sHookTimeContextSource = "ActivityThread";
+                return ctx;
+            }
+        } catch (Throwable ignored) {}
+        sHookTimeContextSource = "NONE";
+        return null;
+    }
+
+    private static HookMap resolveVerifiedHookMap(Context ctx) {
+        PackageInfo aodPi = null;
+        if (ctx != null) {
+            try {
+                aodPi = ctx.getPackageManager().getPackageInfo(AodScanner.AOD_PKG, 0);
+            } catch (Throwable ignored) {}
+        }
+
+        HookMap xmap = HookMap.loadFromXSharedPrefs("io.github.tavataan.nowbarcolor");
+        if (xmap != null) {
+            if (aodPi == null || xmap.matchesTarget(aodPi.getLongVersionCode(), aodPi.lastUpdateTime)) {
+                sHookMapSource = "XSharedPrefs";
+                sHookMapTarget = xmap.aodVersionName + " (" + xmap.aodVersionCode + ") ["
+                        + xmap.countResolvedSlots() + "/" + xmap.totalSlotCount() + "]";
+                return xmap;
+            }
+        }
+
+        if (ctx != null) {
+            HookMap pmap = HookMap.loadFromProvider(ctx);
+            if (pmap != null) {
+                if (aodPi == null || pmap.matchesTarget(aodPi.getLongVersionCode(), aodPi.lastUpdateTime)) {
+                    sHookMapSource = "Provider";
+                    sHookMapTarget = pmap.aodVersionName + " (" + pmap.aodVersionCode + ") ["
+                            + pmap.countResolvedSlots() + "/" + pmap.totalSlotCount() + "]";
+                    return pmap;
+                }
+            }
+        }
+
+        sHookMapSource = (xmap != null) ? "STALE_XSP" : "NULL";
+        return null;
+    }
+
+    private static void schedulePendingLayer2Install(final Context ctx) {
+        if (ctx == null || PENDING_LAYER2_CLASSLOADERS.isEmpty()) {
             return;
         }
-        XposedBridge.log(TAG + ": Hooking AOD / FaceWidget NowBar classes in ClassLoader: " + cl);
-
-        try {
-            final Class<?> baseCardClass = XposedHelpers.findClassIfExists(
-                    "com.samsung.android.app.facewidget.presentation.a", cl);
-            final Class<?> mediaCardClass = XposedHelpers.findClassIfExists(
-                    "com.samsung.android.app.facewidget.presentation.NowBarMediaCardView", cl);
-            final Class<?> batteryCardClass = XposedHelpers.findClassIfExists(
-                    "com.samsung.android.app.facewidget.presentation.NowBarBatteryCardView", cl);
-            final Class<?> briefCardClass = XposedHelpers.findClassIfExists(
-                    "com.samsung.android.app.facewidget.presentation.NowBarBriefCardView", cl);
-            final Class<?> ongoingCardClass = XposedHelpers.findClassIfExists(
-                    "com.samsung.android.app.facewidget.presentation.NowBarOngoingCardView", cl);
-            final Class<?> externalCardClass = XposedHelpers.findClassIfExists(
-                    "com.samsung.android.app.facewidget.presentation.NowBarExternalViewCardView", cl);
-            final Class<?> appSearchCardClass = XposedHelpers.findClassIfExists(
-                    "com.samsung.android.app.facewidget.presentation.NowBarAppSearchCardView", cl);
-            final Class<?> callCardClass = XposedHelpers.findClassIfExists(
-                    "com.samsung.android.app.facewidget.presentation.NowBarCallCardView", cl);
-            final Class<?> modeCardClass = XposedHelpers.findClassIfExists(
-                    "com.samsung.android.app.facewidget.presentation.NowBarModeCardView", cl);
-            final Class<?> contactCardClass = XposedHelpers.findClassIfExists(
-                    "com.samsung.android.app.facewidget.presentation.NowBarContactCardView", cl);
-
-            if (baseCardClass == null) {
-                XposedBridge.log(TAG + ": Base card class 'a' not found in ClassLoader");
-                return;
+        if (sIoHandler == null) {
+            HandlerThread worker = new HandlerThread("NowBarColor-IO", android.os.Process.THREAD_PRIORITY_BACKGROUND);
+            worker.start();
+            sIoHandler = new Handler(worker.getLooper());
+        }
+        sIoHandler.post(new Runnable() {
+            @Override
+            public void run() {
+                final HookMap map = resolveVerifiedHookMap(ctx);
+                if (map == null) return;
+                Handler main = getMainHandler();
+                Runnable apply = new Runnable() {
+                    @Override
+                    public void run() {
+                        List<ClassLoader> pending;
+                        synchronized (PENDING_LAYER2_CLASSLOADERS) {
+                            pending = new ArrayList<>(PENDING_LAYER2_CLASSLOADERS);
+                            PENDING_LAYER2_CLASSLOADERS.clear();
+                        }
+                        for (ClassLoader pcl : pending) {
+                            if (pcl != null) {
+                                installLayer2And3Hooks(pcl, map);
+                            }
+                        }
+                        armWakeTransitionWatch(900L);
+                        refreshAllActiveCards();
+                        pushSystemUiTelemetryOnly(ctx);
+                    }
+                };
+                if (main != null) {
+                    main.post(apply);
+                } else {
+                    apply.run();
+                }
             }
+        });
+    }
 
+    private static synchronized void hookAodPluginClassLoader(final ClassLoader cl) {
+        if (cl == null) return;
+
+        // Layer 1 + GenUI hooks (idempotent per ClassLoader, never depends on HookMap)
+        if (LAYER1_CLASSLOADERS.add(cl)) {
+            XposedBridge.log(TAG + ": Installing Layer-1 NowBar hooks in ClassLoader: " + cl);
+            installLayer1Hooks(cl);
+            hookGenUiClasses(cl);
+        }
+
+        if (LAYER2_CLASSLOADERS.contains(cl)) {
+            return;
+        }
+
+        Context ctx = resolveEarlyContext();
+        HookMap map = resolveVerifiedHookMap(ctx);
+        if (map != null) {
+            PENDING_LAYER2_CLASSLOADERS.remove(cl);
+            installLayer2And3Hooks(cl, map);
+            if (ctx != null) {
+                pushSystemUiTelemetryOnly(ctx);
+            }
+        } else {
+            PENDING_LAYER2_CLASSLOADERS.add(cl);
+            XposedBridge.log(TAG + ": HookMap deferred (" + sHookMapSource + "); queued ClassLoader for retry.");
+            if (ctx != null) {
+                schedulePendingLayer2Install(ctx);
+            }
+        }
+    }
+
+    private static Class<?>[] resolveKnownCardClasses(ClassLoader cl, HookMap map) {
+        Class<?> mediaCardClass = XposedHelpers.findClassIfExists(
+                map != null && map.mediaCardClass != null
+                        ? map.mediaCardClass
+                        : "com.samsung.android.app.facewidget.presentation.NowBarMediaCardView", cl);
+        Class<?> batteryCardClass = XposedHelpers.findClassIfExists(
+                "com.samsung.android.app.facewidget.presentation.NowBarBatteryCardView", cl);
+        Class<?> briefCardClass = XposedHelpers.findClassIfExists(
+                map != null && map.briefCardClass != null
+                        ? map.briefCardClass
+                        : "com.samsung.android.app.facewidget.presentation.NowBarBriefCardView", cl);
+        Class<?> ongoingCardClass = XposedHelpers.findClassIfExists(
+                "com.samsung.android.app.facewidget.presentation.NowBarOngoingCardView", cl);
+        Class<?> externalCardClass = XposedHelpers.findClassIfExists(
+                "com.samsung.android.app.facewidget.presentation.NowBarExternalViewCardView", cl);
+        Class<?> appSearchCardClass = XposedHelpers.findClassIfExists(
+                "com.samsung.android.app.facewidget.presentation.NowBarAppSearchCardView", cl);
+        Class<?> callCardClass = XposedHelpers.findClassIfExists(
+                "com.samsung.android.app.facewidget.presentation.NowBarCallCardView", cl);
+        Class<?> modeCardClass = XposedHelpers.findClassIfExists(
+                "com.samsung.android.app.facewidget.presentation.NowBarModeCardView", cl);
+        Class<?> contactCardClass = XposedHelpers.findClassIfExists(
+                "com.samsung.android.app.facewidget.presentation.NowBarContactCardView", cl);
+
+        Class<?> baseCardClass = (map != null && map.baseCardClass != null)
+                ? XposedHelpers.findClassIfExists(map.baseCardClass, cl)
+                : null;
+        if (baseCardClass == null && mediaCardClass != null) {
+            for (Class<?> sup = mediaCardClass.getSuperclass();
+                 sup != null && !sup.getName().startsWith("android.") && !sup.getName().startsWith("androidx.");
+                 sup = sup.getSuperclass()) {
+                baseCardClass = sup;
+                break;
+            }
+        }
+        return new Class<?>[]{
+                baseCardClass, mediaCardClass, batteryCardClass, briefCardClass,
+                ongoingCardClass, externalCardClass, appSearchCardClass,
+                callCardClass, modeCardClass, contactCardClass
+        };
+    }
+
+    private static void installLayer1Hooks(final ClassLoader cl) {
+        try {
+            Class<?>[] allCardClasses = resolveKnownCardClasses(cl, null);
             XC_MethodHook cardUpdateHook = new XC_MethodHook() {
                 @Override
                 protected void afterHookedMethod(MethodHookParam param) {
@@ -371,150 +625,557 @@ public class NowBarHook implements IXposedHookLoadPackage {
                     }
                 }
             };
-
-            // 1. Hook constructors, lifecycle & background methods across base class 'a' and all card subclasses
-            // (subclasses override E, O, D, T, P, a, u, q, h, i, so hooking both base and subclasses is essential)
-            Class<?>[] allCardClasses = new Class<?>[]{
-                    baseCardClass, mediaCardClass, batteryCardClass, briefCardClass,
-                    ongoingCardClass, externalCardClass, appSearchCardClass,
-                    callCardClass, modeCardClass, contactCardClass
+            XC_MethodHook wakeUpdateHook = new XC_MethodHook() {
+                @Override
+                protected void afterHookedMethod(MethodHookParam param) {
+                    if (param.thisObject instanceof View) {
+                        armWakeTransitionWatch(700L);
+                        requestCardUpdate((View) param.thisObject);
+                    }
+                }
             };
-            String[] commonMethods = new String[]{
-                    "U", "M", "E", "O", "D", "T", "P", "a", "u",
-                    "h", "i", "s", "S", "setViewMode", "onLayout", "V",
-                    "setExpanded", "setDozing", "setDarkAmount",
-                    "onAttachedToWindow", "onFinishInflate", "onVisibilityChanged"
+
+            XC_MethodHook expandHook = new XC_MethodHook() {
+                @Override
+                protected void beforeHookedMethod(MethodHookParam param) {
+                    if (param.thisObject instanceof View) {
+                        Boolean next = (param.args != null && param.args.length >= 1 && param.args[0] instanceof Boolean)
+                                ? (Boolean) param.args[0] : null;
+                        handleExpandTransition((View) param.thisObject, next, true);
+                    }
+                }
+
+                @Override
+                protected void afterHookedMethod(MethodHookParam param) {
+                    if (param.thisObject instanceof View) {
+                        Boolean next = (param.args != null && param.args.length >= 1 && param.args[0] instanceof Boolean)
+                                ? (Boolean) param.args[0] : null;
+                        handleExpandTransition((View) param.thisObject, next, false);
+                    }
+                }
+            };
+
+            String[] androidBoundaryMethods = new String[]{
+                    "onLayout", "onAttachedToWindow", "onFinishInflate", "onVisibilityChanged",
+                    "setViewMode"
             };
             for (Class<?> cardCls : allCardClasses) {
                 if (cardCls == null) continue;
                 try {
                     XposedBridge.hookAllConstructors(cardCls, cardUpdateHook);
                 } catch (Throwable ignored) {}
-                for (String mName : commonMethods) {
-                    if (cardCls == baseCardClass && "U".equals(mName)) continue;
+                try {
+                    XposedBridge.hookAllMethods(cardCls, "setExpanded", expandHook);
+                } catch (Throwable ignored) {}
+                for (String mName : androidBoundaryMethods) {
                     try {
                         XposedBridge.hookAllMethods(cardCls, mName, cardUpdateHook);
                     } catch (Throwable ignored) {}
                 }
             }
+            hookAodStateSetters(allCardClasses);
+            installMediaSurfaceGuardHooks(cl);
 
-            // 1a. Dedicated hook for U(NowBarItem, Integer) on baseCardClass:
-            // Intercepts Samsung's master item-binding method where this.g0 = nowBarItem is set.
-            try {
-                XposedBridge.hookAllMethods(baseCardClass, "U", new XC_MethodHook() {
-                    @Override
-                    protected void afterHookedMethod(MethodHookParam param) {
-                        if (param.thisObject instanceof View) {
-                            final View card = (View) param.thisObject;
-                            if (param.args != null && param.args.length > 0 && param.args[0] != null) {
-                                XposedHelpers.setAdditionalInstanceField(card, "nb_cached_item", param.args[0]);
-                            }
-                            requestCardUpdate(card);
-                        }
-                    }
-                });
-            } catch (Throwable t) {
-                XposedBridge.log(TAG + ": Failed to hook U on baseCardClass: " + t);
-            }
-
-            // 1b. Dedicated hook for N(NowBarItem, View, float, int) on baseCardClass:
-            // Intercepts Samsung's native blur application to prevent black tint or unwanted blur in solid mode.
-            try {
-                XposedBridge.hookAllMethods(baseCardClass, "N", new XC_MethodHook() {
-                    @Override
-                    protected void beforeHookedMethod(MethodHookParam param) {
-                        if (param.thisObject instanceof View) {
-                            View card = (View) param.thisObject;
-                            if (param.args != null && param.args.length > 0 && param.args[0] != null) {
-                                XposedHelpers.setAdditionalInstanceField(card, "nb_cached_item", param.args[0]);
-                            }
-                            if (isCollapsedLockscreenCapsule(card)) {
-                                ConfigManager.Config cfg = sConfig;
-                                String catId = resolveCategoryForCard(card);
-                                ConfigManager.CategoryConfig catCfg = cfg != null ? cfg.getCategory(catId) : null;
-                                if (cfg != null && cfg.masterEnabled && catCfg != null && catCfg.enabled) {
-                                    boolean useBlur = (cfg.styleMode == ConfigManager.STYLE_BLUR);
-                                    if (!useBlur) {
-                                        if (param.args != null && param.args.length > 1 && param.args[1] instanceof View) {
-                                            clearBlurInfo((View) param.args[1]);
-                                        }
-                                        param.setResult(null); // Skip Samsung's blur in solid mode
-                                        return;
-                                    }
-                                    int[] grad = cfg.resolveGradientArgbForCategory(catId);
-                                    if (grad != null && param.args != null && param.args.length > 3) {
-                                        param.args[3] = Color.TRANSPARENT; // Transparent blur tint for gradient
-                                    } else if (param.args != null && param.args.length > 3) {
-                                        param.args[3] = resolveTargetArgbForCategory(catId);
-                                    }
-                                }
-                            }
-                        }
-                    }
-
-                    @Override
-                    protected void afterHookedMethod(MethodHookParam param) {
-                        if (param.thisObject instanceof View) {
-                            final View card = (View) param.thisObject;
-                            if (param.args != null && param.args.length > 0 && param.args[0] != null) {
-                                XposedHelpers.setAdditionalInstanceField(card, "nb_cached_item", param.args[0]);
-                            }
-                            requestCardUpdate(card);
-                        }
-                    }
-                });
-            } catch (Throwable t) {
-                XposedBridge.log(TAG + ": Failed to hook N on baseCardClass: " + t);
-            }
-
-            // 1c. Dedicated hook for q(float, float) -> int on baseCardClass:
-            // Intercepts Samsung's lockscreen card color calculation (which defaults to black 0xCC000000 / 0xFF2B2B2B)
-            try {
-                XposedBridge.hookAllMethods(baseCardClass, "q", new XC_MethodHook() {
-                    @Override
-                    protected void beforeHookedMethod(MethodHookParam param) {
-                        if (param.thisObject instanceof View) {
-                            View card = (View) param.thisObject;
-                            if (isCollapsedLockscreenCapsule(card)) {
-                                ConfigManager.Config cfg = sConfig;
-                                String catId = resolveCategoryForCard(card);
-                                ConfigManager.CategoryConfig catCfg = cfg != null ? cfg.getCategory(catId) : null;
-                                if (cfg != null && cfg.masterEnabled && catCfg != null && catCfg.enabled) {
-                                    int[] grad = cfg.resolveGradientArgbForCategory(catId);
-                                    if (grad != null) {
-                                        param.setResult(Color.TRANSPARENT);
-                                    } else {
-                                        param.setResult(resolveTargetArgbForCategory(catId));
-                                    }
-                                }
-                            }
-                        }
-                    }
-                });
-            } catch (Throwable t) {
-                XposedBridge.log(TAG + ": Failed to hook q on baseCardClass: " + t);
-            }
-
-            // 2. Hook NowBarMediaCardView specific methods
-            if (mediaCardClass != null) {
-                // Hook m0(int, float, int, int):
-                // When media customization is enabled, pass Integer.MAX_VALUE as arg 3 so m0() sets cardView.setForeground(null),
-                // completely preventing Samsung from drawing a light gradient foreground rectangle on p1!
+            Class<?> stackViewClass = XposedHelpers.findClassIfExists(
+                    "com.samsung.android.app.facewidget.utils.NowBarCardStackView", cl);
+            if (stackViewClass != null) {
                 try {
-                    XposedBridge.hookAllMethods(mediaCardClass, "m0", new XC_MethodHook() {
+                    XposedBridge.hookAllMethods(stackViewClass, "addView", new XC_MethodHook() {
                         @Override
-                        protected void beforeHookedMethod(MethodHookParam param) {
-                            if (shouldCustomizeCatMedia() && param.args != null && param.args.length >= 4) {
-                                param.args[3] = Integer.MAX_VALUE;
+                        protected void afterHookedMethod(MethodHookParam param) {
+                            if (param.args != null && param.args.length > 0 && param.args[0] instanceof View) {
+                                View card = (View) param.args[0];
+                                if (looksLikeNowBarCardTree(card)) {
+                                    requestCardUpdate(card);
+                                }
                             }
                         }
                     });
                 } catch (Throwable ignored) {}
+            }
+            sLayer1Hooked = true;
+        } catch (Throwable t) {
+            XposedBridge.log(TAG + ": Error installing Layer-1 hooks: " + t);
+        }
+    }
 
-                String[] mediaMethods = new String[]{"m0", "R", "i0", "y0", "r0"};
-                for (String mName : mediaMethods) {
+    private static XC_MethodHook createAodSetterHook(
+            final String fieldKey, final Class<?> expectedType, final boolean wakeTransition) {
+        return new XC_MethodHook() {
+            @Override
+            protected void beforeHookedMethod(MethodHookParam param) {
+                if (param.thisObject instanceof View && param.args != null
+                        && param.args.length >= 1 && expectedType.isInstance(param.args[0])) {
+                    XposedHelpers.setAdditionalInstanceField(param.thisObject, fieldKey, param.args[0]);
+                }
+            }
+
+            @Override
+            protected void afterHookedMethod(MethodHookParam param) {
+                if (param.thisObject instanceof View) {
+                    View card = (View) param.thisObject;
+                    if (param.args != null && param.args.length >= 1 && expectedType.isInstance(param.args[0])) {
+                        XposedHelpers.setAdditionalInstanceField(card, fieldKey, param.args[0]);
+                    }
+                    if (wakeTransition) {
+                        armWakeTransitionWatch(700L);
+                    }
+                    syncOrKeepMediaOnTransition(card);
+                    requestCardUpdate(card);
+                }
+            }
+        };
+    }
+
+    private static void hookAodStateSetters(Class<?>[] cardClasses) {
+        hookAcrossCardHierarchy(cardClasses, "setLockscreenViewMode",
+                createAodSetterHook("nb_lockscreen_mode", Boolean.class, true));
+        hookAcrossCardHierarchy(cardClasses, "setInitialDozing",
+                createAodSetterHook("nb_initial_dozing", Boolean.class, false));
+        hookAcrossCardHierarchy(cardClasses, "setDozing",
+                createAodSetterHook("nb_dozing", Boolean.class, true));
+        hookAcrossCardHierarchy(cardClasses, "setDarkAmount",
+                createAodSetterHook("nb_dark_amount", Float.class, true));
+    }
+
+    private static void installMediaSurfaceGuardHooks(ClassLoader cl) {
+        Class<?> cardViewClass = XposedHelpers.findClassIfExists("androidx.cardview.widget.CardView", cl);
+        if (cardViewClass != null) {
+            XC_MethodHook cardBgGuard = new XC_MethodHook() {
+                @Override
+                protected void beforeHookedMethod(MethodHookParam param) {
+                    if (CapsuleStyle.isApplyingInternalStyle()
+                            || (MEDIA_BACKDROP_SURFACES.isEmpty() && MEDIA_PILL_SURFACES.isEmpty())
+                            || !(param.thisObject instanceof View)) {
+                        return;
+                    }
+                    View v = (View) param.thisObject;
+                    boolean isBackdrop = MEDIA_BACKDROP_SURFACES.contains(v);
+                    boolean isPill = !isBackdrop && MEDIA_PILL_SURFACES.contains(v);
+                    if (!isBackdrop && !isPill) return;
+                    View card = findEnclosingNowBarCard(v);
+                    if (card == null || !shouldCustomizeCatMedia() || isCardInSettingMode(card)) {
+                        MEDIA_BACKDROP_SURFACES.remove(v);
+                        MEDIA_PILL_SURFACES.remove(v);
+                        return;
+                    }
+                    if (param.args != null && param.args.length >= 1) {
+                        boolean isCsl = param.args[0] instanceof android.content.res.ColorStateList;
+                        if (isBackdrop) {
+                            param.args[0] = isCsl
+                                    ? android.content.res.ColorStateList.valueOf(Color.TRANSPARENT)
+                                    : Color.TRANSPARENT;
+                        } else if (isCollapsedLockscreenCapsule(card)) {
+                            param.setResult(null);
+                        } else {
+                            param.args[0] = isCsl
+                                    ? android.content.res.ColorStateList.valueOf(Color.TRANSPARENT)
+                                    : Color.TRANSPARENT;
+                        }
+                    }
+                }
+            };
+            try {
+                XposedBridge.hookAllMethods(cardViewClass, "setCardBackgroundColor", cardBgGuard);
+            } catch (Throwable ignored) {}
+        }
+
+        if (!sSemBlurHookInstalled) {
+            Method setBlur = CapsuleStyle.getBlurSetterMethod();
+            if (setBlur != null) {
+                sSemBlurHookInstalled = true;
+                try {
+                    XposedBridge.hookMethod(setBlur, new XC_MethodHook() {
+                        @Override
+                        protected void beforeHookedMethod(MethodHookParam param) {
+                            if (CapsuleStyle.isApplyingInternalStyle()
+                                    || (MEDIA_BACKDROP_SURFACES.isEmpty() && MEDIA_PILL_SURFACES.isEmpty())
+                                    || !(param.thisObject instanceof View)) {
+                                return;
+                            }
+                            View v = (View) param.thisObject;
+                            boolean isBackdrop = MEDIA_BACKDROP_SURFACES.contains(v);
+                            boolean isPill = !isBackdrop && MEDIA_PILL_SURFACES.contains(v);
+                            if (!isBackdrop && !isPill) return;
+                            View card = findEnclosingNowBarCard(v);
+                            if (card == null || !shouldCustomizeCatMedia() || isCardInSettingMode(card)) {
+                                MEDIA_BACKDROP_SURFACES.remove(v);
+                                MEDIA_PILL_SURFACES.remove(v);
+                                return;
+                            }
+                            if (param.args != null && param.args.length >= 1) {
+                                if (isBackdrop) {
+                                    param.args[0] = null;
+                                } else {
+                                    ConfigManager.Config cfg = sConfig;
+                                    boolean useBlur = (cfg != null && cfg.styleMode == ConfigManager.STYLE_BLUR);
+                                    if (isCollapsedLockscreenCapsule(card)) {
+                                        if (useBlur && getCardAodVisibility(card) > 0.005f) {
+                                            // Prevent cz4.onAnimationEnd or native resets from clearing Blur mid-collapse.
+                                            param.setResult(null);
+                                        } else {
+                                            param.args[0] = null;
+                                        }
+                                    } else {
+                                        param.args[0] = null;
+                                    }
+                                }
+                            }
+                        }
+                    });
+                } catch (Throwable ignored) {}
+            }
+        }
+    }
+
+    private static void hookAcrossCardHierarchy(Class<?>[] cardClasses, String methodName, XC_MethodHook callback) {
+        if (cardClasses == null || methodName == null || callback == null) return;
+        for (Class<?> cls : cardClasses) {
+            if (cls == null) continue;
+            try {
+                XposedBridge.hookAllMethods(cls, methodName, callback);
+            } catch (Throwable ignored) {}
+        }
+    }
+
+    private static synchronized void installLayer2And3Hooks(final ClassLoader cl, final HookMap map) {
+        if (cl == null || map == null || !LAYER2_CLASSLOADERS.add(cl)) {
+            return;
+        }
+        sHookMap = map;
+        try {
+            Class<?>[] cardClasses = resolveKnownCardClasses(cl, map);
+            final Class<?> baseCardClass = cardClasses[0];
+            final Class<?> mediaCardClass = cardClasses[1];
+            final Class<?> briefCardClass = cardClasses[3];
+            final NowBarCardAdapter adapter = NowBarAdapterFactory.resolve(baseCardClass, map);
+            sAdapter = adapter;
+            hookAodStateSetters(cardClasses);
+
+            final XC_MethodHook wakeCardUpdateHook = new XC_MethodHook() {
+                @Override
+                protected void afterHookedMethod(MethodHookParam param) {
+                    if (param.thisObject instanceof View) {
+                        View card = (View) param.thisObject;
+                        armWakeTransitionWatch(1200L);
+                        syncOrKeepMediaOnTransition(card);
+                        requestCardUpdate(card);
+                    }
+                }
+            };
+
+            // =========================================================================
+            // LAYER 2 — CORE + WAKE/TRANSITION (Decoupled per-slot dynamic HookMap)
+            // =========================================================================
+            boolean coreOk = false;
+            if (baseCardClass != null) {
+                int coreHookCount = 0;
+                if (map.baseBindMethod != null) {
                     try {
-                        XposedBridge.hookAllMethods(mediaCardClass, mName, cardUpdateHook);
+                        XposedBridge.hookAllMethods(baseCardClass, map.baseBindMethod, new XC_MethodHook() {
+                            @Override
+                            protected void afterHookedMethod(MethodHookParam param) {
+                                if (param.thisObject instanceof View) {
+                                    View card = (View) param.thisObject;
+                                    if (param.args != null && param.args.length > 0 && param.args[0] != null) {
+                                        XposedHelpers.setAdditionalInstanceField(card, "nb_cached_item", param.args[0]);
+                                    }
+                                    syncOrKeepMediaOnTransition(card);
+                                    requestCardUpdate(card);
+                                }
+                            }
+                        });
+                        coreHookCount++;
+                    } catch (Throwable t) {
+                        XposedBridge.log(TAG + ": Failed to hook baseBindMethod: " + t);
+                    }
+                }
+
+                if (map.baseBlurMethod != null) {
+                    try {
+                        XposedBridge.hookAllMethods(baseCardClass, map.baseBlurMethod, new XC_MethodHook() {
+                            @Override
+                            protected void beforeHookedMethod(MethodHookParam param) {
+                                if (param.thisObject instanceof View) {
+                                    View card = (View) param.thisObject;
+                                    if (param.args != null && param.args.length > 0 && param.args[0] != null) {
+                                        XposedHelpers.setAdditionalInstanceField(card, "nb_cached_item", param.args[0]);
+                                    }
+                                    ConfigManager.Config cfg = sConfig;
+                                    String catId = resolveCategoryForCard(card);
+                                    ConfigManager.CategoryConfig catCfg = cfg != null ? cfg.getCategory(catId) : null;
+                                    boolean enabledForCard = (cfg != null && cfg.masterEnabled && catCfg != null && catCfg.enabled);
+                                    View targetView = (param.args != null && param.args.length > 1 && param.args[1] instanceof View)
+                                            ? (View) param.args[1] : null;
+                                    if (enabledForCard && isCollapsedLockscreenCapsule(card)) {
+                                        boolean useBlur = (cfg.styleMode == ConfigManager.STYLE_BLUR);
+                                        if (!useBlur && targetView != null) {
+                                            clearBlurInfo(targetView);
+                                        }
+                                        View container = adapter.resolveCardContainer(card);
+                                        if (targetView != null && targetView == container
+                                                && adapter.supportsBaseClearContainerBg()
+                                                && map.baseClearContainerBgMethod != null) {
+                                            callMethodNoArgs(card, map.baseClearContainerBgMethod);
+                                        }
+                                        // CapsuleStyle owns the blur curve, radius, and tint.
+                                        param.setResult(null);
+                                        return;
+                                    }
+                                    if (enabledForCard && card.getClass().getName().endsWith("NowBarMediaCardView")
+                                            && !isCardInSettingMode(card) && targetView != null
+                                            && (targetView == adapter.resolveMediaBackdropSurface(card)
+                                                    || targetView == adapter.resolveMediaPillSurface(card)
+                                                    || targetView == adapter.resolveMediaSettingBgSurface(card))) {
+                                        clearBlurInfo(targetView);
+                                        param.setResult(null);
+                                    }
+                                }
+                            }
+
+                            @Override
+                            protected void afterHookedMethod(MethodHookParam param) {
+                                if (param.thisObject instanceof View) {
+                                    View card = (View) param.thisObject;
+                                    if (param.args != null && param.args.length > 0 && param.args[0] != null) {
+                                        XposedHelpers.setAdditionalInstanceField(card, "nb_cached_item", param.args[0]);
+                                    }
+                                    armWakeTransitionWatch(900L);
+                                    syncOrKeepMediaOnTransition(card);
+                                    requestCardUpdate(card);
+                                }
+                            }
+                        });
+                        coreHookCount++;
+                    } catch (Throwable t) {
+                        XposedBridge.log(TAG + ": Failed to hook baseBlurMethod: " + t);
+                    }
+                }
+
+                if (map.baseColorMethod != null) {
+                    try {
+                        XposedBridge.hookAllMethods(baseCardClass, map.baseColorMethod, new XC_MethodHook() {
+                            @Override
+                            protected void beforeHookedMethod(MethodHookParam param) {
+                                if (param.thisObject instanceof View) {
+                                    View card = (View) param.thisObject;
+                                    ConfigManager.Config cfg = sConfig;
+                                    String catId = resolveCategoryForCard(card);
+                                    ConfigManager.CategoryConfig catCfg = cfg != null ? cfg.getCategory(catId) : null;
+                                    if (cfg != null && cfg.masterEnabled && catCfg != null && catCfg.enabled) {
+                                        if (isCollapsedLockscreenCapsule(card)) {
+                                            float vis = getCardAodVisibility(card);
+                                            int[] grad = cfg.resolveGradientArgbForCategory(catId);
+                                            if (vis <= 0.005f || grad != null || cfg.styleMode == ConfigManager.STYLE_BLUR) {
+                                                param.setResult(Color.TRANSPARENT);
+                                            } else {
+                                                param.setResult(ConfigManager.scaleAlpha(resolveTargetArgbForCategory(catId), vis));
+                                            }
+                                        } else if (card.getClass().getName().endsWith("NowBarMediaCardView")
+                                                && !isCardInSettingMode(card)) {
+                                            param.setResult(Color.TRANSPARENT);
+                                        }
+                                    }
+                                }
+                            }
+                        });
+                        coreHookCount++;
+                    } catch (Throwable t) {
+                        XposedBridge.log(TAG + ": Failed to hook baseColorMethod: " + t);
+                    }
+                }
+                coreOk = (coreHookCount > 0);
+
+                // Hook wake / transition methods across baseCardClass & subclasses so AOD -> Screen-ON
+                // background/blur repaints are always re-intercepted cleanly.
+                String[] wakeMethods = new String[]{
+                        map.baseShapeMethod, map.baseProgressBgMethod, map.baseDarkModeMethod
+                };
+                int wakeCount = 0;
+                for (String wMethod : wakeMethods) {
+                    if (wMethod == null) continue;
+                    hookAcrossCardHierarchy(cardClasses, wMethod, wakeCardUpdateHook);
+                    wakeCount++;
+                }
+                if (map.baseExpandMethod != null) {
+                    XC_MethodHook baseExpandHook = new XC_MethodHook() {
+                        @Override
+                        protected void beforeHookedMethod(MethodHookParam param) {
+                            if (param.thisObject instanceof View) {
+                                View card = (View) param.thisObject;
+                                Boolean nativeExp = readNativeExpandedState(card);
+                                Boolean next = nativeExp != null ? nativeExp
+                                        : ((param.args != null && param.args.length >= 1 && param.args[0] instanceof Boolean)
+                                                ? (Boolean) param.args[0] : null);
+                                handleExpandTransition(card, next, true);
+                            }
+                        }
+
+                        @Override
+                        protected void afterHookedMethod(MethodHookParam param) {
+                            if (param.thisObject instanceof View) {
+                                View card = (View) param.thisObject;
+                                Boolean nativeExp = readNativeExpandedState(card);
+                                Boolean next = nativeExp != null ? nativeExp
+                                        : ((param.args != null && param.args.length >= 1 && param.args[0] instanceof Boolean)
+                                                ? (Boolean) param.args[0] : null);
+                                handleExpandTransition(card, next, false);
+                            }
+                        }
+                    };
+                    hookAcrossCardHierarchy(cardClasses, map.baseExpandMethod, baseExpandHook);
+                    wakeCount++;
+                }
+                if (map.baseSetExpandStateMethod != null) {
+                    XC_MethodHook setExpandStateHook = new XC_MethodHook() {
+                        @Override
+                        protected void afterHookedMethod(MethodHookParam param) {
+                            if (param.thisObject instanceof View) {
+                                View card = (View) param.thisObject;
+                                Boolean nativeExp = readNativeExpandedState(card);
+                                handleExpandTransition(card, nativeExp, false);
+                            }
+                        }
+                    };
+                    hookAcrossCardHierarchy(cardClasses, map.baseSetExpandStateMethod, setExpandStateHook);
+                    wakeCount++;
+                }
+                if (map.baseStateMethod != null) {
+                    XC_MethodHook baseStateHook = new XC_MethodHook() {
+                        @Override
+                        protected void beforeHookedMethod(MethodHookParam param) {
+                            if (param.thisObject instanceof View && param.args != null
+                                    && param.args.length >= 1 && param.args[0] instanceof Integer) {
+                                XposedHelpers.setAdditionalInstanceField(param.thisObject, "nb_card_state", (Integer) param.args[0]);
+                            }
+                        }
+
+                        @Override
+                        protected void afterHookedMethod(MethodHookParam param) {
+                            if (param.thisObject instanceof View) {
+                                View card = (View) param.thisObject;
+                                if (param.args != null && param.args.length >= 1 && param.args[0] instanceof Integer) {
+                                    XposedHelpers.setAdditionalInstanceField(card, "nb_card_state", (Integer) param.args[0]);
+                                }
+                                armWakeTransitionWatch(1200L);
+                                syncOrKeepMediaOnTransition(card);
+                                requestCardUpdate(card);
+                            }
+                        }
+                    };
+                    hookAcrossCardHierarchy(cardClasses, map.baseStateMethod, baseStateHook);
+                    wakeCount++;
+                }
+                if (adapter.supportsBaseAodDrawable() && map.baseAodDrawableMethod != null) {
+                    XC_MethodHook aodDrawableHook = new XC_MethodHook() {
+                        @Override
+                        protected void afterHookedMethod(MethodHookParam param) {
+                            if (param.thisObject instanceof View) {
+                                View card = (View) param.thisObject;
+                                if (Boolean.TRUE.equals(XposedHelpers.getAdditionalInstanceField(card, "nb_restoring"))) {
+                                    return;
+                                }
+                                armWakeTransitionWatch(1200L);
+                                syncOrKeepMediaOnTransition(card);
+                                requestCardUpdate(card);
+                            }
+                        }
+                    };
+                    hookAcrossCardHierarchy(cardClasses, map.baseAodDrawableMethod, aodDrawableHook);
+                    wakeCount++;
+                }
+                sLayer2WakeCount = wakeCount;
+            }
+            sLayer2CoreHooked = coreOk;
+
+            if (map.stackViewClass != null && map.stackRefreshMethod != null) {
+                try {
+                    Class<?> stackCls = XposedHelpers.findClassIfExists(map.stackViewClass, cl);
+                    if (stackCls != null) {
+                        XposedBridge.hookAllMethods(stackCls, map.stackRefreshMethod, new XC_MethodHook() {
+                            @Override
+                            protected void afterHookedMethod(MethodHookParam param) {
+                                if (param.thisObject instanceof ViewGroup) {
+                                    ViewGroup stack = (ViewGroup) param.thisObject;
+                                    ensureSystemUiListeners(stack.getContext());
+                                    armWakeTransitionWatch(1200L);
+                                    for (int i = 0; i < stack.getChildCount(); i++) {
+                                        View child = stack.getChildAt(i);
+                                        syncOrKeepMediaOnTransition(child);
+                                        requestCardUpdate(child);
+                                    }
+                                }
+                            }
+                        });
+                    }
+                } catch (Throwable ignored) {}
+            }
+
+            // =========================================================================
+            // LAYER 3 — ENHANCEMENTS (Independent failure; Core keeps running)
+            // =========================================================================
+            int enhCount = 0;
+            if (mediaCardClass != null) {
+                if (adapter.supportsMediaForegroundLighting() && map.mediaForegroundMethod != null) {
+                    try {
+                        XposedBridge.hookAllMethods(mediaCardClass, map.mediaForegroundMethod, new XC_MethodHook() {
+                            @Override
+                            protected void beforeHookedMethod(MethodHookParam param) {
+                                if (shouldCustomizeCatMedia()) {
+                                    if (param.thisObject instanceof View && isCollapsedLockscreenCapsule((View) param.thisObject)) {
+                                        param.setResult(null);
+                                        return;
+                                    }
+                                    if (param.args != null && param.args.length >= 4) {
+                                        param.args[3] = Integer.MAX_VALUE;
+                                    }
+                                }
+                            }
+                        });
+                        enhCount++;
+                    } catch (Throwable ignored) {}
+                }
+                try {
+                    XposedBridge.hookAllMethods(mediaCardClass, "getBgColorForBlackAod", new XC_MethodHook() {
+                        @Override
+                        protected void beforeHookedMethod(MethodHookParam param) {
+                            if (param.thisObject instanceof View) {
+                                View card = (View) param.thisObject;
+                                ConfigManager.Config cfg = sConfig;
+                                if (cfg != null && cfg.masterEnabled && cfg.hideBgOnAod
+                                        && shouldCustomizeCatMedia()
+                                        && isCollapsedLockscreenCapsule(card)
+                                        && getCardAodVisibility(card) <= 0.005f) {
+                                    param.setResult(Color.TRANSPARENT);
+                                }
+                            }
+                        }
+                    });
+                } catch (Throwable ignored) {}
+                if (map.mediaBlackAodMethod != null) {
+                    try {
+                        XposedBridge.hookAllMethods(mediaCardClass, map.mediaBlackAodMethod, new XC_MethodHook() {
+                            @Override
+                            protected void beforeHookedMethod(MethodHookParam param) {
+                                if (param.thisObject instanceof View) {
+                                    keepExpandedMediaBackdropIfNeeded((View) param.thisObject);
+                                }
+                            }
+
+                            @Override
+                            protected void afterHookedMethod(MethodHookParam param) {
+                                if (param.thisObject instanceof View) {
+                                    View card = (View) param.thisObject;
+                                    if (Boolean.TRUE.equals(XposedHelpers.getAdditionalInstanceField(card, "nb_restoring"))) {
+                                        return;
+                                    }
+                                    armWakeTransitionWatch(800L);
+                                    syncOrKeepMediaOnTransition(card);
+                                    requestCardUpdate(card);
+                                }
+                            }
+                        });
+                        enhCount++;
                     } catch (Throwable ignored) {}
                 }
                 try {
@@ -523,26 +1184,27 @@ public class NowBarHook implements IXposedHookLoadPackage {
                         protected void beforeHookedMethod(MethodHookParam param) {
                             if (param.thisObject instanceof View) {
                                 View card = (View) param.thisObject;
-                                if (isCollapsedLockscreenCapsule(card)) {
+                                if (shouldCustomizeCatMedia() && !isCardInSettingMode(card)) {
+                                    syncMediaSurfaceProtection(card);
                                     ConfigManager.Config cfg = sConfig;
-                                    ConfigManager.CategoryConfig catCfg = cfg != null ? cfg.getCategory(ConfigManager.CAT_MEDIA) : null;
-                                    if (cfg != null && cfg.masterEnabled && catCfg != null && catCfg.enabled) {
-                                        boolean useBlur = (cfg.styleMode == ConfigManager.STYLE_BLUR);
-                                        if (!useBlur) {
-                                            View p1 = getViewField(card, "p1");
+                                    boolean useBlur = (cfg != null && cfg.styleMode == ConfigManager.STYLE_BLUR);
+                                    boolean collapsed = isCollapsedLockscreenCapsule(card);
+                                    boolean aodHidden = collapsed && getCardAodVisibility(card) <= 0.005f;
+                                    NowBarCardAdapter adapter = activeAdapter();
+                                    View o1 = adapter.resolveMediaBackdropSurface(card);
+                                    View t1 = adapter.resolveMediaSettingBgSurface(card);
+                                    View p1 = adapter.resolveMediaPillSurface(card);
+                                    clearBackdropSurface(o1, aodHidden);
+                                    clearBackdropSurface(t1, false);
+                                    if (p1 != null) {
+                                        if (!collapsed || !useBlur) {
                                             clearBlurInfo(p1);
-                                            View o1 = getViewField(card, "o1");
-                                            clearBlurInfo(o1);
-                                            param.setResult(null);
-                                            return;
                                         }
-                                        int[] grad = cfg.resolveGradientArgbForCategory(ConfigManager.CAT_MEDIA);
-                                        if (grad != null && param.args != null && param.args.length > 0) {
-                                            param.args[0] = Color.TRANSPARENT;
-                                        } else if (param.args != null && param.args.length > 0) {
-                                            param.args[0] = resolveTargetArgbForCategory(ConfigManager.CAT_MEDIA);
+                                        if (!collapsed) {
+                                            setCardBackgroundColor(p1, Color.TRANSPARENT);
                                         }
                                     }
+                                    param.setResult(null);
                                 }
                             }
                         }
@@ -553,121 +1215,102 @@ public class NowBarHook implements IXposedHookLoadPackage {
                                 View card = (View) param.thisObject;
                                 ACTIVE_CARDS.add(card);
                                 ensureSystemUiListeners(card.getContext());
+                                syncMediaSurfaceProtection(card);
                                 if (Boolean.TRUE.equals(XposedHelpers.getAdditionalInstanceField(card, "nb_restoring"))) {
                                     return;
                                 }
+                                syncOrKeepMediaOnTransition(card);
                                 requestCardUpdate(card);
                             }
                         }
                     });
+                    enhCount++;
                 } catch (Throwable ignored) {}
-            }
-
-            // 3. Hook NowBarBatteryCardView specific methods
-            if (batteryCardClass != null) {
                 try {
-                    XposedBridge.hookAllMethods(batteryCardClass, "f0", cardUpdateHook);
-                } catch (Throwable ignored) {}
-            }
-
-            // 4. Hook NowBarOngoingCardView specific methods (nudge, AI presence, remote background views)
-            if (ongoingCardClass != null) {
-                String[] ongoingMethods = new String[]{"x0", "y0", "A0", "E0"};
-                for (String mName : ongoingMethods) {
-                    try {
-                        XposedBridge.hookAllMethods(ongoingCardClass, mName, cardUpdateHook);
-                    } catch (Throwable ignored) {}
-                }
-            }
-
-            // 5. Hook NowBarBriefCardView specific methods (including static d0 and e0)
-            if (briefCardClass != null) {
-                try {
-                    XposedBridge.hookAllMethods(briefCardClass, "h0", new XC_MethodHook() {
+                    XposedBridge.hookAllMethods(mediaCardClass, "setSettingBgColor", new XC_MethodHook() {
                         @Override
-                        protected void afterHookedMethod(MethodHookParam param) {
+                        protected void beforeHookedMethod(MethodHookParam param) {
                             if (param.thisObject instanceof View) {
                                 View card = (View) param.thisObject;
-                                ACTIVE_CARDS.add(card);
-                                ensureSystemUiListeners(card.getContext());
-                                if (isCollapsedLockscreenCapsule(card) && shouldCustomizeCatBrief()) {
-                                    ConfigManager.Config cfg = sConfig;
-                                    int[] grad = cfg != null ? cfg.resolveGradientArgbForCategory(ConfigManager.CAT_BRIEF) : null;
-                                    if (grad != null) {
-                                        param.setResult(Color.TRANSPARENT);
-                                    } else {
-                                        Integer liveWall = getLiveWallpaperColorForConfig(cfg);
-                                        int customArgb = cfg.resolveFinalArgbForCategory(ConfigManager.CAT_BRIEF, liveWall);
-                                        param.setResult(customArgb);
-                                    }
+                                if (shouldCustomizeCatMedia() && !isCardInSettingMode(card)) {
+                                    syncMediaSurfaceProtection(card);
+                                    View t1 = activeAdapter().resolveMediaSettingBgSurface(card);
+                                    clearBackdropSurface(t1, false);
+                                    param.setResult(null);
                                 }
                             }
                         }
                     });
-                    String[] briefMethods = new String[]{"g0", "l0"};
-                    for (String mName : briefMethods) {
-                        try {
-                            XposedBridge.hookAllMethods(briefCardClass, mName, cardUpdateHook);
-                        } catch (Throwable ignored) {}
+                } catch (Throwable ignored) {}
+            }
+
+            if (adapter.supportsBriefCardView() && briefCardClass != null) {
+                if (map.briefBgColorMethod != null) {
+                    try {
+                        XposedBridge.hookAllMethods(briefCardClass, map.briefBgColorMethod, new XC_MethodHook() {
+                            @Override
+                            protected void afterHookedMethod(MethodHookParam param) {
+                                if (param.thisObject instanceof View) {
+                                    View card = (View) param.thisObject;
+                                    ACTIVE_CARDS.add(card);
+                                    ensureSystemUiListeners(card.getContext());
+                                    if (isCollapsedLockscreenCapsule(card) && shouldCustomizeCatBrief()) {
+                                        ConfigManager.Config cfg = sConfig;
+                                        float vis = getCardAodVisibility(card);
+                                        int[] grad = cfg != null ? cfg.resolveGradientArgbForCategory(ConfigManager.CAT_BRIEF) : null;
+                                        if (vis <= 0.005f || grad != null || (cfg != null && cfg.styleMode == ConfigManager.STYLE_BLUR)) {
+                                            param.setResult(Color.TRANSPARENT);
+                                        } else {
+                                            Integer liveWall = getLiveWallpaperColorForConfig(cfg);
+                                            int customArgb = cfg.resolveFinalArgbForCategory(ConfigManager.CAT_BRIEF, liveWall);
+                                            param.setResult(ConfigManager.scaleAlpha(customArgb, vis));
+                                        }
+                                    }
+                                }
+                            }
+                        });
+                        enhCount++;
+                    } catch (Throwable ignored) {}
+                }
+                if (map.briefResetBgMethod != null) {
+                    try {
+                        XposedBridge.hookAllMethods(briefCardClass, map.briefResetBgMethod, new XC_MethodHook() {
+                            @Override
+                            protected void beforeHookedMethod(MethodHookParam param) {
+                                if (param.args != null && param.args.length >= 1 && param.args[0] instanceof View) {
+                                    View card = (View) param.args[0];
+                                    if (!Boolean.TRUE.equals(XposedHelpers.getAdditionalInstanceField(card, "nb_restoring"))
+                                            && isCollapsedLockscreenCapsule(card)
+                                            && shouldCustomizeCatBrief()) {
+                                        param.setResult(null);
+                                    }
+                                }
+                            }
+                        });
+                        enhCount++;
+                    } catch (Throwable ignored) {}
+                }
+            }
+
+            if (map.settingsHelperClass != null && map.showNotiLockscreenMethod != null) {
+                try {
+                    Class<?> settingsHelperClass = XposedHelpers.findClassIfExists(map.settingsHelperClass, cl);
+                    if (settingsHelperClass != null) {
+                        XposedBridge.hookAllMethods(settingsHelperClass, map.showNotiLockscreenMethod, new XC_MethodHook() {
+                            @Override
+                            protected void beforeHookedMethod(MethodHookParam param) {
+                                param.setResult(true);
+                            }
+                        });
+                        enhCount++;
                     }
                 } catch (Throwable ignored) {}
             }
 
-            // 6. Hook Samsung GenUI (com.samsung.android.genui) used inside NowBarBriefCardView's ComposeView (o1)
-            hookGenUiClasses(cl);
-
-            // 7. Ensure SettingsHelper.A() forces notiShowStateOnLockscreen=true so Samsung native filter displays ongoing activities
-
-            final Class<?> settingsHelperClass = XposedHelpers.findClassIfExists(
-                    "com.samsung.android.app.aodservice.common.utils.settings.SettingsHelper", cl);
-            if (settingsHelperClass != null) {
-                try {
-                    XposedBridge.hookAllMethods(settingsHelperClass, "A", new XC_MethodHook() {
-                        @Override
-                        protected void beforeHookedMethod(MethodHookParam param) {
-                            param.setResult(true);
-                        }
-                    });
-                    XposedBridge.log(TAG + ": Hooked SettingsHelper.A() to force notiShowStateOnLockscreen=true");
-                } catch (Throwable t) {
-                    XposedBridge.log(TAG + ": Failed to hook SettingsHelper.A: " + t);
-                }
-            }
-
-            // 8. Hook NowBarCardStackView (master container for capsules on Lockscreen)
-            final Class<?> stackViewClass = XposedHelpers.findClassIfExists(
-                    "com.samsung.android.app.facewidget.utils.NowBarCardStackView", cl);
-            if (stackViewClass != null) {
-                // 8a. Hook q(CopyOnWriteArrayList): Samsung's master refreshAllViews method
-                XposedBridge.hookAllMethods(stackViewClass, "q", new XC_MethodHook() {
-                    @Override
-                    protected void afterHookedMethod(MethodHookParam param) {
-                        if (param.thisObject instanceof ViewGroup) {
-                            final ViewGroup stack = (ViewGroup) param.thisObject;
-                            ensureSystemUiListeners(stack.getContext());
-                            for (int i = 0; i < stack.getChildCount(); i++) {
-                                requestCardUpdate(stack.getChildAt(i));
-                            }
-                        }
-                    }
-                });
-
-                // 8b. Hook addView: Intercepts the exact instant any card view is added to the stack hierarchy
-                XposedBridge.hookAllMethods(stackViewClass, "addView", new XC_MethodHook() {
-                    @Override
-                    protected void afterHookedMethod(MethodHookParam param) {
-                        if (param.args != null && param.args.length > 0 && param.args[0] instanceof View) {
-                            final View card = (View) param.args[0];
-                            requestCardUpdate(card);
-                        }
-                    }
-                });
-                XposedBridge.log(TAG + ": Hooked NowBarCardStackView (refreshAllViews 'q' and 'addView')");
-            }
-
-            // 9. Hook NowBarCardGradientView (suppress native notification chip background overlay)
-            final Class<?> gradViewClass = XposedHelpers.findClassIfExists(
-                    "com.samsung.android.app.facewidget.presentation.NowBarCardGradientView", cl);
+            Class<?> gradViewClass = XposedHelpers.findClassIfExists(
+                    map.gradViewClass != null
+                            ? map.gradViewClass
+                            : "com.samsung.android.app.facewidget.presentation.NowBarCardGradientView", cl);
             if (gradViewClass != null) {
                 XC_MethodHook blockGradHook = new XC_MethodHook() {
                     @Override
@@ -688,21 +1331,36 @@ public class NowBarHook implements IXposedHookLoadPackage {
                         }
                     }
                 };
-                for (String m : new String[]{"setGradientBackgroundVisible", "setGradientColor", "b"}) {
+                for (String m : new String[]{"setGradientBackgroundVisible", "setGradientColor"}) {
                     try {
                         XposedBridge.hookAllMethods(gradViewClass, m, blockGradHook);
                     } catch (Throwable ignored) {}
                 }
-                XposedBridge.log(TAG + ": Hooked NowBarCardGradientView to suppress native chip overlay");
+                if (map.gradHideMethod != null) {
+                    try {
+                        XposedBridge.hookAllMethods(gradViewClass, map.gradHideMethod, blockGradHook);
+                        enhCount++;
+                    } catch (Throwable ignored) {}
+                }
             }
+            sLayer3Count = enhCount;
 
-            XposedBridge.log(TAG + ": Successfully hooked all NowBar capsule & GenUI classes!");
+            XposedBridge.log(TAG + ": Installed Layer-2/3 NowBar hooks (Core=" + sLayer2CoreHooked
+                    + ", Wake=" + sLayer2WakeCount + ", Enh=" + sLayer3Count + ")");
         } catch (Throwable t) {
-            XposedBridge.log(TAG + ": Error hooking AOD plugin classes: " + t);
+            XposedBridge.log(TAG + ": Error installing Layer-2/3 hooks: " + t);
         }
     }
 
-    private void hookGenUiClasses(final ClassLoader cl) {
+    private static void pushSystemUiTelemetryOnly(Context ctx) {
+        if (ctx == null) return;
+        StringBuilder sb = new StringBuilder();
+        appendSystemUiTelemetry(sb);
+        sb.append("\n=== Live NowBar View Tree ===\n<Waiting for first card render>");
+        pushDiagnosticsDumpAsync(ctx, sb.toString());
+    }
+
+    private static void hookGenUiClasses(final ClassLoader cl) {
         try {
             // 6a. StyleBox.updateBlur(View, Context, BaseStyle) -> applies SemBlurInfo with preset 54/62 to the GenUI FrameLayout pill
             final Class<?> styleBoxClass = XposedHelpers.findClassIfExists(
@@ -711,6 +1369,9 @@ public class NowBarHook implements IXposedHookLoadPackage {
                 XposedBridge.hookAllMethods(styleBoxClass, "updateBlur", new XC_MethodHook() {
                     @Override
                     protected void afterHookedMethod(MethodHookParam param) {
+                        if (param.getThrowable() != null) {
+                            param.setThrowable(null);
+                        }
                         if (param.args != null && param.args.length >= 1 && param.args[0] instanceof View) {
                             View blurView = (View) param.args[0];
                             if (Boolean.TRUE.equals(XposedHelpers.getAdditionalInstanceField(blurView, "nb_restoring_blur"))) {
@@ -718,6 +1379,7 @@ public class NowBarHook implements IXposedHookLoadPackage {
                             }
                             ACTIVE_GENUI_BLUR_VIEWS.add(blurView);
                             ensureSystemUiListeners(blurView.getContext());
+                            ensureGenUiAttachListener(blurView, true);
                             if (param.thisObject != null) {
                                 XposedHelpers.setAdditionalInstanceField(blurView, "nb_genui_stylebox", param.thisObject);
                             }
@@ -741,6 +1403,7 @@ public class NowBarHook implements IXposedHookLoadPackage {
                             View glView = (View) param.thisObject;
                             ACTIVE_GENUI_GUIDING_VIEWS.add(glView);
                             ensureSystemUiListeners(glView.getContext());
+                            ensureGenUiAttachListener(glView, false);
                             applyOrRestoreGenUiGuidingView(glView);
                         }
                     }
@@ -768,6 +1431,12 @@ public class NowBarHook implements IXposedHookLoadPackage {
                         }
                         if (shouldCustomizeCatBrief() && isCapsuleRootBaseStyle(param.thisObject) && isAnyBriefCardCollapsed()) {
                             ConfigManager.Config gcfg = sConfig;
+                            float vis = resolveBriefVisibility(null);
+                            if ((gcfg != null && gcfg.styleMode == ConfigManager.STYLE_BLUR)
+                                    || (gcfg != null && gcfg.hideBgOnAod && vis < 0.995f)) {
+                                param.setResult(Arrays.asList(Color.TRANSPARENT, Color.TRANSPARENT));
+                                return;
+                            }
                             int[] grad = gcfg != null ? gcfg.resolveGradientArgbForCategory(ConfigManager.CAT_BRIEF) : null;
                             if (grad != null) {
                                 param.setResult(Arrays.asList(grad[0], grad[1]));
@@ -808,6 +1477,44 @@ public class NowBarHook implements IXposedHookLoadPackage {
                         }
                     });
                 } catch (Throwable ignored) {}
+                try {
+                    XposedBridge.hookAllMethods(baseStyleClass, "getStrokeStyle", new XC_MethodHook() {
+                        @Override
+                        protected void afterHookedMethod(MethodHookParam param) {
+                            ConfigManager.Config gcfg = sConfig;
+                            if (gcfg != null && gcfg.hideBgOnAod
+                                    && shouldCustomizeCatBrief()
+                                    && isCapsuleRootBaseStyle(param.thisObject)
+                                    && isAnyBriefCardCollapsed()
+                                    && resolveBriefVisibility(null) < 0.995f) {
+                                param.setResult("without_stroke");
+                            }
+                        }
+                    });
+                } catch (Throwable ignored) {}
+                XC_MethodHook strokeColorHook = new XC_MethodHook() {
+                    @Override
+                    protected void afterHookedMethod(MethodHookParam param) {
+                        Object orig = param.getResult();
+                        if (!(orig instanceof List) || ((List<?>) orig).isEmpty()) {
+                            return;
+                        }
+                        ConfigManager.Config gcfg = sConfig;
+                        if (gcfg != null && gcfg.hideBgOnAod
+                                && shouldCustomizeCatBrief()
+                                && isCapsuleRootBaseStyle(param.thisObject)
+                                && isAnyBriefCardCollapsed()
+                                && resolveBriefVisibility(null) < 0.995f) {
+                            param.setResult(Arrays.asList(Color.TRANSPARENT, Color.TRANSPARENT));
+                        }
+                    }
+                };
+                try {
+                    XposedBridge.hookAllMethods(baseStyleClass, "getStrokeColor", strokeColorHook);
+                } catch (Throwable ignored) {}
+                try {
+                    XposedBridge.hookAllMethods(baseStyleClass, "getStrokeDarkColor", strokeColorHook);
+                } catch (Throwable ignored) {}
             }
         } catch (Throwable t) {
             XposedBridge.log(TAG + ": Error hooking GenUI classes: " + t.getMessage());
@@ -821,6 +1528,7 @@ public class NowBarHook implements IXposedHookLoadPackage {
             final Context appCtx = context.getApplicationContext() != null ? context.getApplicationContext() : context;
             sSysUiContext = appCtx;
             sReceiverRegistered = true;
+            CapsuleStyle.refreshAccessibility(appCtx);
 
             try {
                 Settings.System.putInt(appCtx.getContentResolver(), "nowbar_color_hook_active", 1);
@@ -829,22 +1537,40 @@ public class NowBarHook implements IXposedHookLoadPackage {
             // Load initial config and wallpaper colors
             reloadConfigAndRefreshAll(appCtx, true);
 
+            // Install any deferred Layer-2/3 hooks if hookAodPluginClassLoader ran before Context/HookMap was ready
+            schedulePendingLayer2Install(appCtx);
+
             final Handler h = getMainHandler();
             if (h == null) return;
 
             h.post(new Runnable() {
                 @Override
                 public void run() {
-                    // 1. Register BroadcastReceiver for instant updates from app & wallpaper changes
+                    // 1. Register BroadcastReceiver for instant updates from app, wallpaper, & screen wake/sleep
                     try {
                         IntentFilter filter = new IntentFilter();
                         filter.addAction(ConfigManager.ACTION_CONFIG_UPDATED);
                         filter.addAction(Intent.ACTION_WALLPAPER_CHANGED);
+                        filter.addAction(Intent.ACTION_CONFIGURATION_CHANGED);
+                        filter.addAction(Intent.ACTION_SCREEN_ON);
+                        filter.addAction(Intent.ACTION_SCREEN_OFF);
+                        filter.addAction(Intent.ACTION_USER_PRESENT);
                         BroadcastReceiver receiver = new BroadcastReceiver() {
                             @Override
                             public void onReceive(Context ctx, Intent intent) {
                                 if (intent == null) return;
                                 String action = intent.getAction();
+                                if (Intent.ACTION_SCREEN_ON.equals(action)
+                                        || Intent.ACTION_SCREEN_OFF.equals(action)
+                                        || Intent.ACTION_USER_PRESENT.equals(action)) {
+                                    armWakeTransitionWatch(2000L);
+                                    refreshAllActiveCards();
+                                    return;
+                                }
+                                if (Intent.ACTION_CONFIGURATION_CHANGED.equals(action)) {
+                                    refreshAllActiveCards();
+                                    return;
+                                }
                                 if (ConfigManager.ACTION_CONFIG_UPDATED.equals(action)) {
                                     String json = intent.getStringExtra("config_json");
                                     if (json != null && !json.isEmpty()) {
@@ -892,6 +1618,17 @@ public class NowBarHook implements IXposedHookLoadPackage {
                     } catch (Throwable t) {
                         XposedBridge.log(TAG + ": ContentObserver registration error: " + t.getMessage());
                     }
+
+                    try {
+                        appCtx.getContentResolver().registerContentObserver(
+                                Settings.System.getUriFor("accessibility_reduce_transparency"), false,
+                                new ContentObserver(h) {
+                                    @Override public void onChange(boolean selfChange) {
+                                        CapsuleStyle.refreshAccessibility(appCtx);
+                                        refreshAllActiveCards();
+                                    }
+                                });
+                    } catch (Throwable ignored) {}
 
                     // 3. Register WallpaperManager.OnColorsChangedListener for live Lockscreen Wallpaper updates
                     try {
@@ -983,15 +1720,42 @@ public class NowBarHook implements IXposedHookLoadPackage {
         return catCfg != null && catCfg.enabled;
     }
 
-    private static int resolveTargetArgbForCategory(String categoryId) {
-        ConfigManager.Config cfg = sConfig;
-        if (cfg == null) return 0xE61E293B;
+    private static Integer resolveLiveWallpaperColorForCategory(ConfigManager.Config cfg, String categoryId) {
+        if (cfg == null) return null;
         ConfigManager.CategoryConfig catCfg = cfg.getCategory(categoryId);
-        Integer liveWallColor = (cfg.colorMode == ConfigManager.MODE_LOCK_WALLPAPER
+        return (cfg.colorMode == ConfigManager.MODE_LOCK_WALLPAPER
                 && (catCfg == null || !catCfg.useCustomColor))
                 ? getLiveWallpaperColorForConfig(cfg)
                 : null;
-        return cfg.resolveFinalArgbForCategory(categoryId, liveWallColor);
+    }
+
+    private static int resolveTargetArgbForCategory(String categoryId) {
+        ConfigManager.Config cfg = sConfig;
+        if (cfg == null) return 0xE61E293B;
+        return cfg.resolveFinalArgbForCategory(categoryId, resolveLiveWallpaperColorForCategory(cfg, categoryId));
+    }
+
+    private static int resolveBlurTargetArgbForCategory(String categoryId) {
+        ConfigManager.Config cfg = sConfig;
+        if (cfg == null) return OneUiBlurSpec.applyTintOpacity(0x1E293B, OneUiBlurSpec.DEFAULT_TINT_OPACITY);
+        return cfg.resolveBlurFinalArgbForCategory(categoryId, resolveLiveWallpaperColorForCategory(cfg, categoryId));
+    }
+
+    private static int resolveConfiguredBlurRadiusPx(ConfigManager.Config cfg) {
+        return cfg != null
+                ? cfg.resolveBlurRadiusPx()
+                : OneUiBlurSpec.radiusPxFromPercent(OneUiBlurSpec.DEFAULT_BLUR_INTENSITY);
+    }
+
+    private static View findCollapsedBriefCard() {
+        synchronized (ACTIVE_CARDS) {
+            for (View card : ACTIVE_CARDS) {
+                if (card != null && card.getClass().getName().endsWith("NowBarBriefCardView")) {
+                    if (isCollapsedLockscreenCapsule(card)) return card;
+                }
+            }
+        }
+        return null;
     }
 
     private static boolean isAnyBriefCardCollapsed() {
@@ -1005,6 +1769,275 @@ public class NowBarHook implements IXposedHookLoadPackage {
             }
         }
         return !foundBriefCard;
+    }
+
+    private static void scheduleAodZeroFallbackCheck(final View card) {
+        if (card == null || Boolean.TRUE.equals(XposedHelpers.getAdditionalInstanceField(card, "nb_doze_zero_scheduled"))) {
+            return;
+        }
+        Handler h = getMainHandler();
+        if (h == null) return;
+        XposedHelpers.setAdditionalInstanceField(card, "nb_doze_zero_scheduled", Boolean.TRUE);
+        h.postDelayed(new Runnable() {
+            @Override
+            public void run() {
+                XposedHelpers.setAdditionalInstanceField(card, "nb_doze_zero_scheduled", Boolean.FALSE);
+                if (card.isAttachedToWindow()) {
+                    requestCardUpdate(card);
+                }
+            }
+        }, 190L);
+    }
+
+    /**
+     * Returns 0.0f when fully awake on the Lockscreen, 1.0f when fully in AOD, or an
+     * intermediate fraction synchronized frame-by-frame to Samsung's darkAmount (0.0 <-> 1.0).
+     * Always returns 0.0f when hideBgOnAod is disabled.
+     */
+    private static boolean readAodBooleanState(
+            View card, String trackedKey, String getterName, String setterName,
+            String resolvedField, String legacyField, boolean defVal) {
+        if (card == null) return defVal;
+        if (getterName != null) {
+            Object direct = callMethodNoArgs(card, getterName);
+            if (direct instanceof Boolean) {
+                return (Boolean) direct;
+            }
+        }
+        if (resolvedField != null) {
+            Object resolved = getFieldValue(card, resolvedField);
+            if (resolved instanceof Boolean) {
+                return (Boolean) resolved;
+            }
+        }
+        Object tracked = XposedHelpers.getAdditionalInstanceField(card, trackedKey);
+        if (tracked instanceof Boolean) {
+            return (Boolean) tracked;
+        }
+        if (legacyField != null && (setterName == null
+                || ReflectionCache.method(card.getClass(), setterName, boolean.class) == null)) {
+            Object legacy = getFieldValue(card, legacyField);
+            if (legacy instanceof Boolean) {
+                return (Boolean) legacy;
+            }
+        }
+        return defVal;
+    }
+
+    private static boolean readCardLockscreenMode(View card) {
+        HookMap map = sHookMap;
+        return readAodBooleanState(card, "nb_lockscreen_mode", "getLockscreenViewMode",
+                "setLockscreenViewMode", map != null ? map.baseLockscreenModeField : null, "M", true);
+    }
+
+    private static boolean readCardDozing(View card) {
+        HookMap map = sHookMap;
+        return readAodBooleanState(card, "nb_dozing", "getDozing",
+                "setDozing", map != null ? map.baseDozingField : null, "C", false);
+    }
+
+    private static boolean readCardInitialDozing(View card) {
+        if (readAodBooleanState(card, "nb_initial_dozing", "getInitialDozing",
+                "setInitialDozing", null, null, false)) {
+            return true;
+        }
+        return activeAdapter().readInitialDozingFallback(card);
+    }
+
+    private static float readCardDarkAmount(View card) {
+        if (card == null) return 0.0f;
+        Object direct = callMethodNoArgs(card, "getDarkAmount");
+        if (direct instanceof Float) return (Float) direct;
+        Object tracked = XposedHelpers.getAdditionalInstanceField(card, "nb_dark_amount");
+        if (tracked instanceof Float) return (Float) tracked;
+        return activeAdapter().readDarkAmountFallback(card);
+    }
+
+    private static float getCardAodProgress(View card) {
+        ConfigManager.Config cfg = sConfig;
+        if (card == null || cfg == null || !cfg.masterEnabled || !cfg.hideBgOnAod) {
+            return 0.0f;
+        }
+        float darkAmount = readCardDarkAmount(card);
+        if (darkAmount < 0.0f) darkAmount = 0.0f;
+        if (darkAmount > 1.0f) darkAmount = 1.0f;
+        if (darkAmount > 0.0f) {
+            XposedHelpers.setAdditionalInstanceField(card, "nb_doze_zero_since", null);
+            return darkAmount;
+        }
+        boolean dozing = readCardDozing(card);
+        boolean initialDozing = readCardInitialDozing(card);
+        boolean lockscreenMode = readCardLockscreenMode(card);
+        if (!lockscreenMode && (isCollapsedLockscreenCapsule(card) || dozing || initialDozing)) {
+            return 1.0f;
+        }
+        if (!card.isAttachedToWindow()) {
+            return (dozing || initialDozing) ? 1.0f : 0.0f;
+        }
+        boolean briefScreenOn = true;
+        if (card.getClass().getName().endsWith("NowBarBriefCardView")) {
+            briefScreenOn = activeAdapter().resolveBriefScreenOn(card);
+        }
+        if (!dozing && briefScreenOn) {
+            XposedHelpers.setAdditionalInstanceField(card, "nb_doze_zero_since", null);
+            return 0.0f;
+        }
+        Long sinceNs = (Long) XposedHelpers.getAdditionalInstanceField(card, "nb_doze_zero_since");
+        long nowNs = System.nanoTime();
+        if (sinceNs == null) {
+            XposedHelpers.setAdditionalInstanceField(card, "nb_doze_zero_since", nowNs);
+            scheduleAodZeroFallbackCheck(card);
+            return 0.0f;
+        }
+        long elapsedMs = (nowNs - sinceNs) / 1_000_000L;
+        return elapsedMs >= 180L ? 1.0f : 0.0f;
+    }
+
+    private static float getCardAodVisibility(View card) {
+        return Math.max(0.0f, Math.min(1.0f, 1.0f - getCardAodProgress(card)));
+    }
+
+    private static float resolveBriefVisibility(View genUiChildView) {
+        View card = genUiChildView != null ? findEnclosingNowBarCard(genUiChildView) : null;
+        if (card == null) {
+            card = findCollapsedBriefCard();
+        }
+        return card != null ? getCardAodVisibility(card) : 1.0f;
+    }
+
+    private static void applyBorderStroke(View card, boolean useBlur, float corner, float alpha) {
+        if (card == null) return;
+        View border = activeAdapter().resolveBorderStrokeView(card);
+        if (border == null) return;
+        CapsuleStyle.applyGlassBorder(border, useBlur, corner);
+        float clamped = alpha <= 0.005f ? 0.0f : (alpha >= 0.995f ? 1.0f : alpha);
+        if (clamped >= 0.995f) {
+            if (Boolean.TRUE.equals(XposedHelpers.getAdditionalInstanceField(card, "nb_border_faded"))) {
+                border.setAlpha(1.0f);
+                XposedHelpers.setAdditionalInstanceField(card, "nb_border_faded", Boolean.FALSE);
+            }
+        } else {
+            border.setAlpha(clamped);
+            XposedHelpers.setAdditionalInstanceField(card, "nb_border_faded", Boolean.TRUE);
+        }
+    }
+
+    private static void applyAdaptiveContentContrast(View card, int startArgb, int endArgb, boolean useBlur, float vis) {
+        if (card == null) return;
+        if (vis <= 0.005f) {
+            restoreAdaptiveContentContrast(card);
+            return;
+        }
+        boolean applyDark = OneUiBlurSpec.needsDarkForeground(startArgb, endArgb, useBlur);
+        boolean applyShadow = !applyDark && OneUiBlurSpec.needsContrastShadow(startArgb, endArgb, useBlur);
+        if (!applyDark && !applyShadow) {
+            restoreAdaptiveContentContrast(card);
+            return;
+        }
+        XposedHelpers.setAdditionalInstanceField(card, "nb_contrast_applied", Boolean.TRUE);
+        View normalRoot = findViewByEntryName(card, "normal_content_rootview");
+        View targetRoot = normalRoot != null ? normalRoot : card;
+        float density = 3.0f;
+        try {
+            if (card.getResources() != null) {
+                float d = card.getResources().getDisplayMetrics().density;
+                if (d > 0f) density = d;
+            }
+        } catch (Throwable ignored) {}
+        ColorStateList darkTint = applyDark ? ColorStateList.valueOf(OneUiBlurSpec.DARK_CONTENT_COLOR) : null;
+        applyContrastRecursive(targetRoot, 0, applyDark, applyShadow, density, darkTint);
+    }
+
+    private static void restoreAdaptiveContentContrast(View card) {
+        if (card == null) return;
+        if (!Boolean.TRUE.equals(XposedHelpers.getAdditionalInstanceField(card, "nb_contrast_applied"))) {
+            return;
+        }
+        XposedHelpers.setAdditionalInstanceField(card, "nb_contrast_applied", Boolean.FALSE);
+        View normalRoot = findViewByEntryName(card, "normal_content_rootview");
+        View targetRoot = normalRoot != null ? normalRoot : card;
+        applyContrastRecursive(targetRoot, 0, false, false, 3.0f, null);
+    }
+
+    private static boolean shouldSkipContrastSubtree(String entryName) {
+        return "expand_content_rootview".equals(entryName)
+                || "setting_content_rootview".equals(entryName)
+                || "album_art_container".equals(entryName)
+                || "stack_pip_app_icon_parent_layout".equals(entryName)
+                || "background_shader_parent".equals(entryName);
+    }
+
+    private static boolean isMonochromeControlImage(String entryName) {
+        if (entryName == null || entryName.isEmpty()) return false;
+        if (entryName.contains("album") || entryName.contains("app_icon") || entryName.contains("battery_icon")) {
+            return false;
+        }
+        return entryName.contains("button")
+                || entryName.contains("play")
+                || entryName.contains("pause")
+                || entryName.contains("prev")
+                || entryName.contains("next")
+                || entryName.contains("skip")
+                || entryName.equals("ongoing_action")
+                || entryName.equals("ongoing_sec_action");
+    }
+
+    private static void applyContrastRecursive(
+            View node, int depth, boolean applyDark, boolean applyShadow,
+            float density, ColorStateList darkTint) {
+        if (node == null || depth > 5) return;
+        String entry = getResourceEntryNameSafe(node);
+        if (shouldSkipContrastSubtree(entry)) return;
+
+        if (node instanceof TextView) {
+            TextView tv = (TextView) node;
+            Object savedFlag = XposedHelpers.getAdditionalInstanceField(tv, "nb_contrast_saved");
+            if ((applyDark || applyShadow) && !Boolean.TRUE.equals(savedFlag)) {
+                XposedHelpers.setAdditionalInstanceField(tv, "nb_orig_text_colors", tv.getTextColors());
+                XposedHelpers.setAdditionalInstanceField(tv, "nb_contrast_saved", Boolean.TRUE);
+            }
+            if (applyDark) {
+                tv.setTextColor(OneUiBlurSpec.DARK_CONTENT_COLOR);
+                tv.setShadowLayer(0f, 0f, 0f, 0);
+            } else if (applyShadow) {
+                Object orig = XposedHelpers.getAdditionalInstanceField(tv, "nb_orig_text_colors");
+                if (orig instanceof ColorStateList) {
+                    tv.setTextColor((ColorStateList) orig);
+                }
+                tv.setShadowLayer(2.2f * density, 0f, 0.7f * density, OneUiBlurSpec.CONTRAST_SHADOW_COLOR);
+            } else if (Boolean.TRUE.equals(savedFlag)) {
+                Object orig = XposedHelpers.getAdditionalInstanceField(tv, "nb_orig_text_colors");
+                if (orig instanceof ColorStateList) {
+                    tv.setTextColor((ColorStateList) orig);
+                }
+                tv.setShadowLayer(0f, 0f, 0f, 0);
+                XposedHelpers.setAdditionalInstanceField(tv, "nb_orig_text_colors", null);
+                XposedHelpers.setAdditionalInstanceField(tv, "nb_contrast_saved", Boolean.FALSE);
+            }
+        } else if (node instanceof ImageView && isMonochromeControlImage(entry)) {
+            ImageView iv = (ImageView) node;
+            Object savedFlag = XposedHelpers.getAdditionalInstanceField(iv, "nb_img_contrast_saved");
+            if (applyDark) {
+                if (!Boolean.TRUE.equals(savedFlag)) {
+                    XposedHelpers.setAdditionalInstanceField(iv, "nb_orig_img_tint", iv.getImageTintList());
+                    XposedHelpers.setAdditionalInstanceField(iv, "nb_img_contrast_saved", Boolean.TRUE);
+                }
+                iv.setImageTintList(darkTint);
+            } else if (Boolean.TRUE.equals(savedFlag)) {
+                ColorStateList origTint = (ColorStateList) XposedHelpers.getAdditionalInstanceField(iv, "nb_orig_img_tint");
+                iv.setImageTintList(origTint);
+                XposedHelpers.setAdditionalInstanceField(iv, "nb_orig_img_tint", null);
+                XposedHelpers.setAdditionalInstanceField(iv, "nb_img_contrast_saved", Boolean.FALSE);
+            }
+        }
+
+        if (node instanceof ViewGroup) {
+            ViewGroup vg = (ViewGroup) node;
+            int count = vg.getChildCount();
+            for (int i = 0; i < count; i++) {
+                applyContrastRecursive(vg.getChildAt(i), depth + 1, applyDark, applyShadow, density, darkTint);
+            }
+        }
     }
 
     private static View findEnclosingNowBarCard(View view) {
@@ -1070,9 +2103,17 @@ public class NowBarHook implements IXposedHookLoadPackage {
             boolean shouldCustom = shouldCustomizeCatBrief() && isBriefViewCollapsed(blurView);
             if (shouldCustom) {
                 ConfigManager.Config cfg = sConfig;
-                int targetArgb = resolveTargetArgbForCategory(ConfigManager.CAT_BRIEF);
-                int[] grad = cfg != null ? cfg.resolveGradientArgbForCategory(ConfigManager.CAT_BRIEF) : null;
                 boolean useBlur = (cfg != null && cfg.styleMode == ConfigManager.STYLE_BLUR);
+                int targetArgb = useBlur
+                        ? resolveBlurTargetArgbForCategory(ConfigManager.CAT_BRIEF)
+                        : resolveTargetArgbForCategory(ConfigManager.CAT_BRIEF);
+                int[] grad = cfg != null
+                        ? (useBlur
+                            ? cfg.resolveBlurGradientArgbForCategory(ConfigManager.CAT_BRIEF)
+                            : cfg.resolveGradientArgbForCategory(ConfigManager.CAT_BRIEF))
+                        : null;
+                int blurRadiusPx = useBlur ? resolveConfiguredBlurRadiusPx(cfg) : 0;
+                float vis = resolveBriefVisibility(blurView);
 
                 float cornerDp = 34.0f;
                 Object baseStyle = XposedHelpers.getAdditionalInstanceField(blurView, "nb_genui_style");
@@ -1091,14 +2132,17 @@ public class NowBarHook implements IXposedHookLoadPackage {
                 float cornerPx = cornerDp * (density > 0f ? density : 3.0f);
                 if (cornerPx <= 0f) cornerPx = 100.0f;
 
+                View card = findEnclosingNowBarCard(blurView);
+                boolean drawBorderFg = (activeAdapter().resolveBorderStrokeView(card) == null);
                 XposedHelpers.setAdditionalInstanceField(blurView, "nb_genui_blur_applied", Boolean.TRUE);
-                setCardViewColorAndStyle(blurView, targetArgb, useBlur, cornerPx, grad);
+                setCardViewColorAndStyle(blurView, targetArgb, useBlur, blurRadiusPx, cornerPx, grad, vis, drawBorderFg);
             } else {
                 Object applied = XposedHelpers.getAdditionalInstanceField(blurView, "nb_genui_blur_applied");
                 if (Boolean.TRUE.equals(applied)) {
                     XposedHelpers.setAdditionalInstanceField(blurView, "nb_genui_blur_applied", Boolean.FALSE);
                     XposedHelpers.setAdditionalInstanceField(blurView, "nb_restoring_blur", Boolean.TRUE);
                     try {
+                        CapsuleStyle.restoreElevation(blurView);
                         restoreGradientIfNeeded(blurView);
                         blurView.setBackground(null);
                         Object styleBox = XposedHelpers.getAdditionalInstanceField(blurView, "nb_genui_stylebox");
@@ -1119,25 +2163,100 @@ public class NowBarHook implements IXposedHookLoadPackage {
         }
     }
 
+    private static void ensureGenUiAttachListener(View view, final boolean isBlurNode) {
+        if (view == null) return;
+        if (Boolean.TRUE.equals(XposedHelpers.getAdditionalInstanceField(view, "nb_genui_attach_listener"))) {
+            return;
+        }
+        XposedHelpers.setAdditionalInstanceField(view, "nb_genui_attach_listener", Boolean.TRUE);
+        view.addOnAttachStateChangeListener(new View.OnAttachStateChangeListener() {
+            @Override
+            public void onViewAttachedToWindow(View v) {
+                if (isBlurNode) {
+                    applyOrRestoreGenUiBlurView(v);
+                } else {
+                    applyOrRestoreGenUiGuidingView(v);
+                }
+                View card = findEnclosingNowBarCard(v);
+                if (card != null) {
+                    requestCardUpdate(card);
+                }
+            }
+
+            @Override
+            public void onViewDetachedFromWindow(View v) {
+            }
+        });
+    }
+
+    private static boolean hasActiveGenUiBlurViewForCard(View rootCard) {
+        List<View> blurViews;
+        synchronized (ACTIVE_GENUI_BLUR_VIEWS) {
+            blurViews = new ArrayList<>(ACTIVE_GENUI_BLUR_VIEWS);
+        }
+        for (View bv : blurViews) {
+            if (bv == null || !bv.isAttachedToWindow()) continue;
+            if (rootCard == null || findEnclosingNowBarCard(bv) == rootCard) {
+                return true;
+            }
+        }
+        return false;
+    }
+
     private static void applyOrRestoreGenUiGuidingView(View glView) {
         if (glView == null) return;
         try {
             boolean shouldCustom = shouldCustomizeCatBrief() && isBriefViewCollapsed(glView);
             if (shouldCustom) {
                 ConfigManager.Config cfg = sConfig;
-                int targetArgb = resolveTargetArgbForCategory(ConfigManager.CAT_BRIEF);
-                int[] grad = cfg != null ? cfg.resolveGradientArgbForCategory(ConfigManager.CAT_BRIEF) : null;
                 boolean useBlur = (cfg != null && cfg.styleMode == ConfigManager.STYLE_BLUR);
+                int targetArgb = useBlur
+                        ? resolveBlurTargetArgbForCategory(ConfigManager.CAT_BRIEF)
+                        : resolveTargetArgbForCategory(ConfigManager.CAT_BRIEF);
+                int[] grad = cfg != null
+                        ? (useBlur
+                            ? cfg.resolveBlurGradientArgbForCategory(ConfigManager.CAT_BRIEF)
+                            : cfg.resolveGradientArgbForCategory(ConfigManager.CAT_BRIEF))
+                        : null;
+                int blurRadiusPx = useBlur ? resolveConfiguredBlurRadiusPx(cfg) : 0;
+                float vis = resolveBriefVisibility(glView);
                 float density = glView.getContext().getResources().getDisplayMetrics().density;
                 float cornerPx = 34.0f * (density > 0f ? density : 3.0f);
 
                 XposedHelpers.setAdditionalInstanceField(glView, "nb_genui_gl_applied", Boolean.TRUE);
-                glView.setAlpha(1.0f);
-                setCardViewColorAndStyle(glView, targetArgb, useBlur, cornerPx, grad);
+
+                // Stop Samsung's opaque RuntimeShader on GuidingLightEffectLayout so our solid or blur pill shows cleanly.
+                if (Build.VERSION.SDK_INT >= 31) {
+                    try {
+                        glView.setRenderEffect(null);
+                    } catch (Throwable ignored) {}
+                }
+                try {
+                    Object gle = XposedHelpers.getObjectField(glView, "guidingLightEffect");
+                    if (gle != null) {
+                        XposedHelpers.callMethod(gle, "j");
+                    }
+                } catch (Throwable ignored) {}
+
+                // GenUIRenderer skips StyleBox.Blur when strokeStyle is "without_stroke" on GuidingLight pills,
+                // leaving GuidingLightEffectLayout (glView) as the ONLY Android View for the Now Brief capsule.
+                // Only hide glView in blur mode if a separate StyleBox.Blur sibling view is also attached to this card.
+                View card = findEnclosingNowBarCard(glView);
+                boolean hasBlurSibling = hasActiveGenUiBlurViewForCard(card);
+                if (useBlur && hasBlurSibling) {
+                    glView.setAlpha(0.0f);
+                    CapsuleStyle.transparent(glView);
+                } else {
+                    glView.setAlpha(1.0f);
+                    boolean drawBorderFg = (activeAdapter().resolveBorderStrokeView(card) == null);
+                    setCardViewColorAndStyle(glView, targetArgb, useBlur, blurRadiusPx, cornerPx, grad, vis, drawBorderFg);
+                }
             } else {
                 Object applied = XposedHelpers.getAdditionalInstanceField(glView, "nb_genui_gl_applied");
                 if (Boolean.TRUE.equals(applied)) {
                     XposedHelpers.setAdditionalInstanceField(glView, "nb_genui_gl_applied", Boolean.FALSE);
+                    CapsuleStyle.restoreElevation(glView);
+                    glView.setAlpha(1.0f);
                     restoreGradientIfNeeded(glView);
                     glView.setBackground(null);
                     clearBlurInfo(glView);
@@ -1146,15 +2265,198 @@ public class NowBarHook implements IXposedHookLoadPackage {
         } catch (Throwable ignored) {}
     }
 
+    private static Boolean readNativeExpandedState(View card) {
+        if (card == null) return null;
+        Object direct = callMethodNoArgs(card, "isExpanded");
+        if (direct instanceof Boolean) return (Boolean) direct;
+        Object getter = callMethodNoArgs(card, "getExpanded");
+        if (getter instanceof Boolean) return (Boolean) getter;
+        HookMap map = sHookMap;
+        if (map != null && map.baseExpandField != null) {
+            Object resolved = getFieldValue(card, map.baseExpandField);
+            if (resolved instanceof Boolean) return (Boolean) resolved;
+        }
+        return activeAdapter().readExpandedFallback(card);
+    }
+
+    private static boolean isCardExpanded(View card) {
+        if (card == null) return false;
+        Boolean nativeExp = readNativeExpandedState(card);
+        if (nativeExp != null) {
+            return nativeExp;
+        }
+        Object tracked = XposedHelpers.getAdditionalInstanceField(card, "nb_expanded");
+        if (tracked instanceof Boolean) {
+            return (Boolean) tracked;
+        }
+        return false;
+    }
+
+    private static void handleExpandTransition(View card, Boolean nextExpanded, boolean beforeCall) {
+        if (card == null) return;
+        if (nextExpanded != null) {
+            XposedHelpers.setAdditionalInstanceField(card, "nb_expanded", nextExpanded);
+        }
+        if (beforeCall) {
+            if (isCollapsedLockscreenCapsule(card)) {
+                syncOrKeepMediaOnTransition(card);
+            } else {
+                keepExpandedMediaBackdropIfNeeded(card);
+            }
+            return;
+        }
+        armWakeTransitionWatch(1200L);
+        syncOrKeepMediaOnTransition(card);
+        requestCardUpdate(card);
+        if (card.getClass().getName().endsWith("NowBarMediaCardView") && !isCollapsedLockscreenCapsule(card)) {
+            captureExpandedTreeDiagnosticsDelayed(card);
+        }
+    }
+
+    private static int getCardStateValue(View card) {
+        if (card == null) return 0;
+        Object stateObj = callMethodNoArgs(card, "getCardState");
+        if (stateObj instanceof Integer) {
+            return (Integer) stateObj;
+        }
+        Object tracked = XposedHelpers.getAdditionalInstanceField(card, "nb_card_state");
+        if (tracked instanceof Integer) {
+            return (Integer) tracked;
+        }
+        return activeAdapter().readCardStateFallback(card);
+    }
+
+    private static boolean isCardInSettingMode(View card) {
+        return getCardStateValue(card) == 2;
+    }
+
     /**
      * Checks if the NowBar capsule is currently in its small/collapsed state on the Lockscreen
      * (!isExpanded, cardState == 0). Keeps color pre-applied at all times (including screen-off/AOD)
      * so that upon screen-on it appears instantly with 0 ms delay.
      */
     private static boolean isCollapsedLockscreenCapsule(View card) {
-        boolean isExpanded = getBooleanFieldOrGetter(card, "l0", "getExpanded", false);
-        int cardState = getIntFieldOrGetter(card, "j0", "getCardState", 0);
-        return !isExpanded && cardState == 0;
+        return !isCardExpanded(card) && getCardStateValue(card) == 0;
+    }
+
+    private static boolean shouldKeepExpandedMediaBackdropTransparent(View card) {
+        return card != null
+                && card.getClass().getName().endsWith("NowBarMediaCardView")
+                && shouldCustomizeCatMedia()
+                && !isCardInSettingMode(card);
+    }
+
+    private static void syncMediaSurfaceProtection(View card) {
+        if (card == null || !card.getClass().getName().endsWith("NowBarMediaCardView")) return;
+        NowBarCardAdapter adapter = activeAdapter();
+        View p1 = adapter.resolveMediaPillSurface(card);
+        View o1 = adapter.resolveMediaBackdropSurface(card);
+        View t1 = adapter.resolveMediaSettingBgSurface(card);
+        boolean active = shouldCustomizeCatMedia() && !isCardInSettingMode(card);
+        if (active) {
+            if (o1 != null) MEDIA_BACKDROP_SURFACES.add(o1);
+            if (t1 != null) MEDIA_BACKDROP_SURFACES.add(t1);
+            if (p1 != null) MEDIA_PILL_SURFACES.add(p1);
+        } else {
+            if (o1 != null) MEDIA_BACKDROP_SURFACES.remove(o1);
+            if (t1 != null) MEDIA_BACKDROP_SURFACES.remove(t1);
+            if (p1 != null) MEDIA_PILL_SURFACES.remove(p1);
+        }
+    }
+
+    private static void clearBackdropSurface(View surface, boolean aodHidden) {
+        if (surface == null) return;
+        if (Build.VERSION.SDK_INT >= 23 && surface.getForeground() != null) {
+            surface.setForeground(null);
+        }
+        clearBlurInfo(surface);
+        if (aodHidden) {
+            CapsuleStyle.transparent(surface);
+        } else {
+            CapsuleStyle.restoreGradient(surface);
+            if (surface.getBackgroundTintList() != null) {
+                surface.setBackgroundTintList(null);
+            }
+            android.graphics.drawable.Drawable bg = surface.getBackground();
+            if (bg instanceof android.graphics.drawable.GradientDrawable
+                    || bg instanceof android.graphics.drawable.ColorDrawable) {
+                surface.setBackground(null);
+            }
+            CapsuleStyle.setElevationScale(surface, 0f);
+            setCardBackgroundColor(surface, Color.TRANSPARENT);
+        }
+    }
+
+    private static void keepExpandedMediaBackdropIfNeeded(View card) {
+        if (!shouldKeepExpandedMediaBackdropTransparent(card)) return;
+        if (Boolean.TRUE.equals(XposedHelpers.getAdditionalInstanceField(card, "nb_applying"))
+                || Boolean.TRUE.equals(XposedHelpers.getAdditionalInstanceField(card, "nb_restoring"))) {
+            return;
+        }
+        XposedHelpers.setAdditionalInstanceField(card, "nb_applying", Boolean.TRUE);
+        try {
+            applyExpandedMediaBackdropClear(card);
+        } finally {
+            XposedHelpers.setAdditionalInstanceField(card, "nb_applying", Boolean.FALSE);
+        }
+    }
+
+    private static void applyExpandedMediaBackdropClear(View card) {
+        syncMediaSurfaceProtection(card);
+        if (!shouldKeepExpandedMediaBackdropTransparent(card)) return;
+        NowBarCardAdapter adapter = activeAdapter();
+        View v1 = adapter.resolveMediaShaderView(card);
+        View w1 = adapter.resolveMediaShaderParent(card);
+        View p1 = adapter.resolveMediaPillSurface(card);
+        View o1 = adapter.resolveMediaBackdropSurface(card);
+        View t1 = adapter.resolveMediaSettingBgSurface(card);
+        if (v1 != null) v1.setAlpha(0.0f);
+        if (w1 != null) w1.setAlpha(0.0f);
+        if (o1 != null && p1 != null) {
+            clearBackdropSurface(o1, false);
+        }
+        if (t1 != null) {
+            clearBackdropSurface(t1, false);
+        }
+        if (p1 != null && !isCollapsedLockscreenCapsule(card)) {
+            if (Build.VERSION.SDK_INT >= 23 && p1.getForeground() != null) {
+                p1.setForeground(null);
+            }
+            clearBlurInfo(p1);
+            setCardBackgroundColor(p1, Color.TRANSPARENT);
+        }
+    }
+
+    private static void syncOrKeepMediaOnTransition(View card) {
+        if (card == null
+                || Boolean.TRUE.equals(XposedHelpers.getAdditionalInstanceField(card, "nb_applying"))
+                || Boolean.TRUE.equals(XposedHelpers.getAdditionalInstanceField(card, "nb_restoring"))) {
+            return;
+        }
+        ConfigManager.Config cfg = sConfig;
+        if (cfg == null) return;
+        if (isCollapsedLockscreenCapsule(card)) {
+            if (cfg.masterEnabled) {
+                String catId = resolveCategoryForCard(card);
+                ConfigManager.CategoryConfig catCfg = cfg.getCategory(catId);
+                if (catCfg != null && catCfg.enabled) {
+                    applyOrRestoreCardBackground(card);
+                    return;
+                }
+            }
+            if (Boolean.TRUE.equals(XposedHelpers.getAdditionalInstanceField(card, "nb_custom_applied"))) {
+                applyOrRestoreCardBackground(card);
+            }
+            return;
+        }
+        if (Boolean.TRUE.equals(XposedHelpers.getAdditionalInstanceField(card, "nb_custom_applied"))) {
+            applyOrRestoreCardBackground(card);
+        } else {
+            keepExpandedMediaBackdropIfNeeded(card);
+            if (card.getClass().getName().endsWith("NowBarMediaCardView")) {
+                captureExpandedTreeDiagnosticsIfNeeded(card);
+            }
+        }
     }
 
     private static String collectCardText(View view) {
@@ -1195,10 +2497,7 @@ public class NowBarHook implements IXposedHookLoadPackage {
         if (card == null) return ConfigManager.CAT_OTHER_ONGOING;
         String clsName = card.getClass().getName();
         if (clsName.endsWith("NowBarMediaCardView")) return ConfigManager.CAT_MEDIA;
-        Object item = getObjectFieldOrGetter(card, "g0", "getItem");
-        if (item == null) {
-            item = XposedHelpers.getAdditionalInstanceField(card, "nb_cached_item");
-        }
+        Object item = activeAdapter().resolveCardItem(card);
 
         String pkg = "";
         String notiId = "";
@@ -1346,56 +2645,91 @@ public class NowBarHook implements IXposedHookLoadPackage {
 
     private static void applyOrRestoreCardBackground(View card) {
         if (card == null) return;
+        if (Boolean.TRUE.equals(XposedHelpers.getAdditionalInstanceField(card, "nb_applying"))) {
+            return;
+        }
+        XposedHelpers.setAdditionalInstanceField(card, "nb_applying", Boolean.TRUE);
         try {
             ConfigManager.Config cfg = sConfig;
             if (cfg == null || !cfg.masterEnabled || !isCollapsedLockscreenCapsule(card)) {
                 restoreOriginalCardBackgroundIfNeeded(card);
+                applyExpandedMediaBackdropClear(card);
+                if (card.getClass().getName().endsWith("NowBarMediaCardView")
+                        && (isCardExpanded(card) || isCardInSettingMode(card))) {
+                    captureExpandedTreeDiagnosticsIfNeeded(card);
+                }
                 return;
             }
             String categoryId = resolveCategoryForCard(card);
-            ConfigManager.CategoryConfig catCfg = cfg != null ? cfg.getCategory(categoryId) : null;
+            ConfigManager.CategoryConfig catCfg = cfg.getCategory(categoryId);
 
-            boolean shouldCustomize = cfg != null
-                    && cfg.masterEnabled
-                    && catCfg != null
-                    && catCfg.enabled
-                    && isCollapsedLockscreenCapsule(card);
-
-            if (!shouldCustomize) {
+            if (catCfg == null || !catCfg.enabled) {
                 restoreOriginalCardBackgroundIfNeeded(card);
                 return;
             }
 
-            int targetArgb = resolveTargetArgbForCategory(categoryId);
-            int[] grad = cfg.resolveGradientArgbForCategory(categoryId);
             boolean useBlur = (cfg.styleMode == ConfigManager.STYLE_BLUR);
-            float radius = getFloatFieldOrGetter(card, "w0", "getCardRadius", 100.0f);
+            int targetArgb = useBlur
+                    ? resolveBlurTargetArgbForCategory(categoryId)
+                    : resolveTargetArgbForCategory(categoryId);
+            int[] grad = useBlur
+                    ? cfg.resolveBlurGradientArgbForCategory(categoryId)
+                    : cfg.resolveGradientArgbForCategory(categoryId);
+            int blurRadiusPx = useBlur ? resolveConfiguredBlurRadiusPx(cfg) : 0;
+            float vis = getCardAodVisibility(card);
+            float radius = activeAdapter().resolveCardRadius(card, 100.0f);
             if (radius <= 0f) radius = 100.0f;
 
             String clsName = card.getClass().getName();
             XposedHelpers.setAdditionalInstanceField(card, "nb_custom_applied", Boolean.TRUE);
+            applyBorderStroke(card, useBlur && vis > 0.005f, radius, cfg.hideBgOnAod ? vis : 1.0f);
+            int contrastStart = (grad != null && grad.length >= 2) ? grad[0] : targetArgb;
+            int contrastEnd = (grad != null && grad.length >= 2) ? grad[1] : targetArgb;
+            applyAdaptiveContentContrast(card, contrastStart, contrastEnd, useBlur, vis);
 
-            if (clsName.endsWith("NowBarMediaCardView")) {
-                applyToMediaCard(card, targetArgb, useBlur, radius, grad);
-            } else {
-                applyToStandardCard(card, clsName, targetArgb, useBlur, radius, grad);
+            boolean aodHiddenMode = cfg.hideBgOnAod && vis <= 0.005f;
+            sLastCardSummary = "cat=" + categoryId
+                    + " vis=" + String.format(Locale.US, "%.2f", vis)
+                    + " blur=" + useBlur
+                    + (useBlur ? (" blurPx=" + blurRadiusPx) : "")
+                    + " hideAod=" + cfg.hideBgOnAod
+                    + " cls=" + card.getClass().getSimpleName();
+            if (aodHiddenMode) {
+                sLastAodSummary = sLastCardSummary;
+            } else if (vis >= 0.995f) {
+                sLastLockSummary = sLastCardSummary;
             }
+
+            boolean drawBorderInFg = (activeAdapter().resolveBorderStrokeView(card) == null);
+            if (clsName.endsWith("NowBarMediaCardView")) {
+                applyToMediaCard(card, targetArgb, useBlur, blurRadiusPx, radius, grad, vis, drawBorderInFg);
+            } else {
+                applyToStandardCard(card, clsName, targetArgb, useBlur, blurRadiusPx, radius, grad, vis, drawBorderInFg);
+            }
+            captureTreeDiagnosticsIfNeeded(card, aodHiddenMode, vis);
         } catch (Throwable t) {
             XposedBridge.log(TAG + ": applyOrRestoreCardBackground error: " + t.getMessage());
+        } finally {
+            XposedHelpers.setAdditionalInstanceField(card, "nb_applying", Boolean.FALSE);
         }
     }
 
-    private static void applyToMediaCard(View card, int targetArgb, boolean useBlur, float radius, int[] grad) {
+    private static void applyToMediaCard(
+            View card, int targetArgb, boolean useBlur, int blurRadiusPx,
+            float radius, int[] grad, float vis, boolean drawBorderInFg) {
         if (Build.VERSION.SDK_INT >= 23) {
             card.setForeground(null);
         }
-        View p1 = getViewField(card, "p1"); // stack_background_cardview
-        View o1 = getViewField(card, "o1"); // nowbar_cardview_background
-        View v1 = getViewField(card, "v1"); // background_shader_view (MediaLightingView)
-        View w1 = getViewField(card, "w1"); // background_shader_parent
+        syncMediaSurfaceProtection(card);
+        NowBarCardAdapter adapter = activeAdapter();
+        View p1 = adapter.resolveMediaPillSurface(card);
+        View o1 = adapter.resolveMediaBackdropSurface(card);
+        View t1 = adapter.resolveMediaSettingBgSurface(card);
+        View v1 = adapter.resolveMediaShaderView(card);
+        View w1 = adapter.resolveMediaShaderParent(card);
 
         // Hide the animated shader background while collapsed so custom color is clean,
-        // without touching album art (l1/m1), title text (n1), wave (a2), or action buttons (L1/M1).
+        // without touching album art, title text, wave, or action buttons.
         if (v1 != null) {
             v1.setAlpha(0.0f);
         }
@@ -1404,32 +2738,39 @@ public class NowBarHook implements IXposedHookLoadPackage {
         }
 
         // o1 (nowbar_cardview_background) holds expanded card dimensions in NowBarMediaCardView.
-        // It must ALWAYS be transparent to prevent a huge rectangular island from lingering
-        // behind the card during expand/collapse transitions.
-        if (o1 != null) {
-            if (Build.VERSION.SDK_INT >= 23) {
-                o1.setForeground(null);
-            }
-            clearBlurInfo(o1);
-            setCardBackgroundColor(o1, Color.TRANSPARENT);
+        // Always keep it and t1 transparent & elevation-free when p1 exists; otherwise o1 is fallback pill surface.
+        if (o1 != null && p1 != null) {
+            clearBackdropSurface(o1, vis <= 0.005f);
+        }
+        if (t1 != null) {
+            clearBackdropSurface(t1, vis <= 0.005f);
         }
 
-        // p1 (stack_background_cardview) is the true Now Bar media capsule pill that animates
-        // width, height, and corner radius with Samsung's spring physics.
-        if (p1 != null) {
-            if (Build.VERSION.SDK_INT >= 23) {
-                p1.setForeground(null);
+        View mediaTarget = p1 != null ? p1 : o1;
+        if (mediaTarget != null) {
+            if (Build.VERSION.SDK_INT >= 23 && (vis <= 0.005f || !useBlur)) {
+                mediaTarget.setForeground(null);
             }
-            setCardViewColorAndStyle(p1, targetArgb, useBlur, radius, grad);
+            setCardViewColorAndStyle(mediaTarget, targetArgb, useBlur, blurRadiusPx, radius, grad, vis, drawBorderInFg);
+            if (!useBlur && vis > 0.005f && mediaTarget.getBackground() != null
+                    && mediaTarget.getBackground().getAlpha() != 255) {
+                try {
+                    mediaTarget.getBackground().setAlpha(255);
+                } catch (Throwable ignored) {}
+            }
         }
+        syncResidualAodContainers(card, vis <= 0.005f, p1, o1);
     }
 
-    private static void applyToStandardCard(View card, String clsName, int targetArgb, boolean useBlur, float radius, int[] grad) {
-        View cardContainer = getViewFieldOrGetter(card, "J", "getCardViewContainer");
-        View mpsmContainer = getViewFieldOrGetter(card, "K", "getCardViewMpsmBackground");
-        View guidingBg = getViewFieldOrGetter(card, "F", "getCardBGViewForGuidingEffect");
-        View gradientBg = getViewFieldOrGetter(card, "x0", "getGradientBgView");
-        View outerGlow = getViewFieldOrGetter(card, "G", "getCardOuterGlowView");
+    private static void applyToStandardCard(
+            View card, String clsName, int targetArgb, boolean useBlur, int blurRadiusPx,
+            float radius, int[] grad, float vis, boolean drawBorderInFg) {
+        NowBarCardAdapter adapter = activeAdapter();
+        View cardContainer = adapter.resolveCardContainer(card);
+        View mpsmContainer = adapter.resolveMpsmContainer(card);
+        View guidingBg = adapter.resolveGuidingBgView(card);
+        View gradientBg = adapter.resolveGradientBgView(card);
+        View outerGlow = adapter.resolveOuterGlowView(card);
 
         if (guidingBg != null) {
             guidingBg.setAlpha(0.0f);
@@ -1441,34 +2782,36 @@ public class NowBarHook implements IXposedHookLoadPackage {
         if (outerGlow != null) {
             outerGlow.setAlpha(0.0f);
         }
-        if (mpsmContainer != null && mpsmContainer.getVisibility() == View.VISIBLE) {
-            setCardViewColorAndStyle(mpsmContainer, targetArgb, useBlur, radius, grad);
+        if (mpsmContainer != null && (mpsmContainer.getVisibility() == View.VISIBLE || vis <= 0.005f)) {
+            setCardViewColorAndStyle(mpsmContainer, targetArgb, useBlur, blurRadiusPx, radius, grad, vis, drawBorderInFg);
         }
         if (cardContainer != null) {
-            setCardViewColorAndStyle(cardContainer, targetArgb, useBlur, radius, grad);
+            setCardViewColorAndStyle(cardContainer, targetArgb, useBlur, blurRadiusPx, radius, grad, vis, drawBorderInFg);
         }
+        syncResidualAodContainers(card, vis <= 0.005f, cardContainer, mpsmContainer);
 
         if (clsName.endsWith("NowBarBatteryCardView")) {
             // Subtle progress fill alpha so the user's chosen capsule background color dominates cleanly
-            View progressBar = getViewField(card, "q1"); // battery_progressbar
+            // and fades to 0 in transparent AOD mode.
+            View progressBar = adapter.resolveBatteryProgressBar(card);
             if (progressBar != null) {
-                progressBar.setAlpha(0.28f);
+                progressBar.setAlpha(vis <= 0.005f ? 0.0f : (0.28f * vis));
             }
         } else if (clsName.endsWith("NowBarOngoingCardView")) {
-            // Ensure normal_text_container (H1) and chronometer view (s1) are always visible (alpha 1.0)
-            View normalTextContainer = getViewField(card, "H1");
+            // Ensure normal_text_container and chronometer view remain visible (alpha 1.0)
+            View normalTextContainer = adapter.resolveNormalTextContainer(card);
             if (normalTextContainer != null && normalTextContainer.getAlpha() < 1.0f) {
                 normalTextContainer.setAlpha(1.0f);
             }
-            View chronometerView = getViewField(card, "s1");
+            View chronometerView = adapter.resolveChronometerView(card);
             if (chronometerView != null && chronometerView.getAlpha() < 1.0f) {
                 chronometerView.setAlpha(1.0f);
             }
 
-            // Hide AI Nudge (e0) & AI Presence (J1/K1) shader overlays while collapsed so custom color is clean
-            View nudgeContainer = getViewFieldOrGetter(card, "e0", "getNudgeContianer");
-            View aiPresenceContainer = getViewField(card, "J1");
-            View aiPresenceView = getViewField(card, "K1");
+            // Hide AI Nudge & AI Presence shader overlays while collapsed so custom color is clean
+            View nudgeContainer = adapter.resolveNudgeContainer(card);
+            View aiPresenceContainer = adapter.resolveAiPresenceContainer(card);
+            View aiPresenceView = adapter.resolveAiPresenceView(card);
             if (nudgeContainer != null) nudgeContainer.setAlpha(0.0f);
             if (aiPresenceContainer != null) aiPresenceContainer.setAlpha(0.0f);
             if (aiPresenceView != null) {
@@ -1478,23 +2821,49 @@ public class NowBarHook implements IXposedHookLoadPackage {
                 aiPresenceView.setAlpha(0.0f);
             }
         } else if (clsName.endsWith("NowBarBriefCardView")) {
-            View briefBg = getViewField(card, "s1"); // nowbar_cardview_background_for_now_brief
+            boolean foundGenUiSurface = updateChildGenUiViews(card);
+            View briefBg = adapter.resolveBriefBackgroundView(card);
             if (briefBg != null) {
-                setCardViewColorAndStyle(briefBg, targetArgb, useBlur, radius, grad);
+                try {
+                    XposedHelpers.callMethod(briefBg, "setRadius", radius);
+                } catch (Throwable ignored) {}
+                if (vis <= 0.005f) {
+                    restoreGradientIfNeeded(briefBg);
+                    CapsuleStyle.transparent(briefBg);
+                } else if (useBlur && foundGenUiSurface) {
+                    CapsuleStyle.restoreElevation(briefBg);
+                    restoreGradientIfNeeded(briefBg);
+                    clearBlurInfo(briefBg);
+                    setCardBackgroundColor(briefBg, Color.TRANSPARENT);
+                } else {
+                    try {
+                        ViewGroup.LayoutParams lp = briefBg.getLayoutParams();
+                        int normalW = (int) adapter.resolveNormalCardWidth(card);
+                        int normalH = (int) adapter.resolveNormalCardHeight(card);
+                        if (lp != null && normalW > 0 && normalH > 0 && (lp.width <= 0 || lp.height <= 0)) {
+                            lp.width = normalW;
+                            lp.height = normalH;
+                            if (lp instanceof android.widget.FrameLayout.LayoutParams) {
+                                ((android.widget.FrameLayout.LayoutParams) lp).gravity = 81;
+                            }
+                            briefBg.setLayoutParams(lp);
+                        }
+                    } catch (Throwable ignored) {}
+                    setCardViewColorAndStyle(briefBg, targetArgb, useBlur, blurRadiusPx, radius, grad, vis, drawBorderInFg);
+                }
             }
-            updateChildGenUiViews(card);
         }
     }
 
     private static boolean updateChildGenUiViews(View rootCard) {
-        boolean foundBlurView = false;
+        boolean foundGenUiSurface = false;
         List<View> blurViews;
         synchronized (ACTIVE_GENUI_BLUR_VIEWS) {
             blurViews = new ArrayList<>(ACTIVE_GENUI_BLUR_VIEWS);
         }
         for (View bv : blurViews) {
             if (bv != null && bv.isAttachedToWindow() && findEnclosingNowBarCard(bv) == rootCard) {
-                foundBlurView = true;
+                foundGenUiSurface = true;
                 applyOrRestoreGenUiBlurView(bv);
             }
         }
@@ -1504,10 +2873,11 @@ public class NowBarHook implements IXposedHookLoadPackage {
         }
         for (View gv : glViews) {
             if (gv != null && gv.isAttachedToWindow() && findEnclosingNowBarCard(gv) == rootCard) {
+                foundGenUiSurface = true;
                 applyOrRestoreGenUiGuidingView(gv);
             }
         }
-        return foundBlurView;
+        return foundGenUiSurface;
     }
 
     private static void restoreOriginalCardBackgroundIfNeeded(View card) {
@@ -1517,17 +2887,22 @@ public class NowBarHook implements IXposedHookLoadPackage {
         }
         XposedHelpers.setAdditionalInstanceField(card, "nb_custom_applied", Boolean.FALSE);
         XposedHelpers.setAdditionalInstanceField(card, "nb_restoring", Boolean.TRUE);
+        NowBarCardAdapter adapter = activeAdapter();
         try {
+            applyBorderStroke(card, false, 100.0f, 1.0f);
+            restoreAdaptiveContentContrast(card);
+            syncResidualAodContainers(card, false, null, null);
+            syncMediaSurfaceProtection(card);
             String clsName = card.getClass().getName();
             if (clsName.endsWith("NowBarMediaCardView")) {
-                View v1 = getViewField(card, "v1");
-                View w1 = getViewField(card, "w1");
-                View p1 = getViewField(card, "p1");
-                View o1 = getViewField(card, "o1");
+                View v1 = adapter.resolveMediaShaderView(card);
+                View w1 = adapter.resolveMediaShaderParent(card);
+                View p1 = adapter.resolveMediaPillSurface(card);
+                View o1 = adapter.resolveMediaBackdropSurface(card);
+                View t1 = adapter.resolveMediaSettingBgSurface(card);
 
-                boolean isExpanded = Boolean.TRUE.equals(callMethodNoArgs(card, "isExpanded"));
-                Object stateObj = callMethodNoArgs(card, "getCardState");
-                boolean isNotNormal = (stateObj instanceof Integer && (Integer) stateObj != 0);
+                boolean isExpanded = isCardExpanded(card);
+                boolean isNotNormal = isCardInSettingMode(card);
 
                 if (isExpanded || isNotNormal) {
                     // The card is expanding into full widget view or opening settings.
@@ -1535,58 +2910,89 @@ public class NowBarHook implements IXposedHookLoadPackage {
                     if (v1 != null) v1.setAlpha(0.0f);
                     if (w1 != null) w1.setAlpha(0.0f);
                     if (p1 != null) {
+                        CapsuleStyle.restoreElevation(p1);
                         if (Build.VERSION.SDK_INT >= 23) {
                             p1.setForeground(null);
                         }
                         restoreGradientIfNeeded(p1);
+                        if (!isNotNormal && shouldCustomizeCatMedia()) {
+                            clearBlurInfo(p1);
+                            setCardBackgroundColor(p1, Color.TRANSPARENT);
+                        }
                     }
                     if (Build.VERSION.SDK_INT >= 23) {
                         card.setForeground(null);
                     }
-                    if (o1 != null) {
-                        if (Build.VERSION.SDK_INT >= 23) {
-                            o1.setForeground(null);
+                    if (!isNotNormal && shouldCustomizeCatMedia()) {
+                        // Keep o1 and t1 transparent & elevation-free behind the animating expanded music page.
+                        if (o1 != null && p1 != null) {
+                            clearBackdropSurface(o1, false);
                         }
-                        restoreGradientIfNeeded(o1);
+                        if (t1 != null) {
+                            clearBackdropSurface(t1, false);
+                        }
+                    } else {
+                        if (o1 != null) {
+                            CapsuleStyle.restoreElevation(o1);
+                            if (Build.VERSION.SDK_INT >= 23) {
+                                o1.setForeground(null);
+                            }
+                            restoreGradientIfNeeded(o1);
+                        }
+                        HookMap activeMap = sHookMap;
+                        if (activeMap != null) {
+                            adapter.restoreBriefCardExtra(card, activeMap, 0.0f);
+                        } else if (adapter instanceof OneUi9Adapter) {
+                            try {
+                                XposedHelpers.callMethod(card, "h", 0.0f);
+                            } catch (Throwable ignored) {}
+                        }
                     }
-                    try {
-                        XposedHelpers.callMethod(card, "h", 0.0f);
-                    } catch (Throwable ignored) {}
                     return;
                 }
 
                 if (v1 != null) v1.setAlpha(1.0f);
                 if (w1 != null) w1.setAlpha(1.0f);
                 if (p1 != null) {
+                    CapsuleStyle.restoreElevation(p1);
                     restoreGradientIfNeeded(p1);
                     clearBlurInfo(p1);
                     setCardBackgroundColor(p1, Color.TRANSPARENT);
                 }
                 if (o1 != null) {
+                    CapsuleStyle.restoreElevation(o1);
                     restoreGradientIfNeeded(o1);
                 }
-                Object item = getObjectFieldOrGetter(card, "g0", "getItem");
-                float curRadius = getFloatFieldOrGetter(card, "w0", "getNormalCardRadius", 100.0f);
-                if (item != null) {
+                HookMap activeMap = sHookMap;
+                String blackAodMethod = (activeMap != null)
+                        ? activeMap.mediaBlackAodMethod
+                        : (adapter instanceof OneUi9Adapter ? "i0" : null);
+                Object item = adapter.resolveCardItem(card);
+                float curRadius = adapter.resolveMediaBlackAodRadius(card, 100.0f);
+                if (item != null && blackAodMethod != null) {
                     try {
-                        XposedHelpers.callMethod(card, "i0", item, curRadius);
+                        XposedHelpers.callMethod(card, blackAodMethod, item, curRadius);
                     } catch (Throwable ignored) {}
                 }
-                try {
-                    XposedHelpers.callMethod(card, "h", 0.0f);
-                } catch (Throwable ignored) {}
-                try {
-                    XposedHelpers.callMethod(card, "E");
-                } catch (Throwable ignored) {}
+                if (activeMap != null) {
+                    adapter.restoreBriefCardExtra(card, activeMap, 0.0f);
+                } else if (adapter instanceof OneUi9Adapter) {
+                    try {
+                        XposedHelpers.callMethod(card, "h", 0.0f);
+                    } catch (Throwable ignored) {}
+                }
+                adapter.triggerShapeRefresh(card, activeMap);
             } else {
-                View cardContainer = getViewFieldOrGetter(card, "J", "getCardViewContainer");
-                View mpsmContainer = getViewFieldOrGetter(card, "K", "getCardViewMpsmBackground");
+                View cardContainer = adapter.resolveCardContainer(card);
+                View mpsmContainer = adapter.resolveMpsmContainer(card);
+                CapsuleStyle.restoreElevation(cardContainer);
+                CapsuleStyle.restoreElevation(mpsmContainer);
                 restoreGradientIfNeeded(cardContainer);
                 restoreGradientIfNeeded(mpsmContainer);
 
-                View guidingBg = getViewFieldOrGetter(card, "F", "getCardBGViewForGuidingEffect");
-                View gradientBg = getViewFieldOrGetter(card, "x0", "getGradientBgView");
-                View outerGlow = getViewFieldOrGetter(card, "G", "getCardOuterGlowView");
+                View guidingBg = adapter.resolveGuidingBgView(card);
+                View gradientBg = adapter.resolveGradientBgView(card);
+                View outerGlow = adapter.resolveOuterGlowView(card);
                 if (guidingBg != null) guidingBg.setAlpha(1.0f);
                 if (gradientBg != null) {
                     gradientBg.setVisibility(View.VISIBLE);
@@ -1595,32 +3001,29 @@ public class NowBarHook implements IXposedHookLoadPackage {
                 if (outerGlow != null) outerGlow.setAlpha(1.0f);
 
                 if (clsName.endsWith("NowBarBatteryCardView")) {
-                    View progressBar = getViewField(card, "q1");
+                    View progressBar = adapter.resolveBatteryProgressBar(card);
                     if (progressBar != null) progressBar.setAlpha(1.0f);
                 } else if (clsName.endsWith("NowBarOngoingCardView")) {
-                    View normalTextContainer = getViewField(card, "H1");
+                    View normalTextContainer = adapter.resolveNormalTextContainer(card);
                     if (normalTextContainer != null) normalTextContainer.setAlpha(1.0f);
-                    View chronometerView = getViewField(card, "s1");
+                    View chronometerView = adapter.resolveChronometerView(card);
                     if (chronometerView != null) chronometerView.setAlpha(1.0f);
 
-                    View nudgeContainer = getViewFieldOrGetter(card, "e0", "getNudgeContianer");
-                    View aiPresenceContainer = getViewField(card, "J1");
-                    View aiPresenceView = getViewField(card, "K1");
+                    View nudgeContainer = adapter.resolveNudgeContainer(card);
+                    View aiPresenceContainer = adapter.resolveAiPresenceContainer(card);
+                    View aiPresenceView = adapter.resolveAiPresenceView(card);
                     if (nudgeContainer != null) nudgeContainer.setAlpha(1.0f);
                     if (aiPresenceContainer != null) aiPresenceContainer.setAlpha(1.0f);
                     if (aiPresenceView != null) aiPresenceView.setAlpha(1.0f);
                 } else if (clsName.endsWith("NowBarBriefCardView")) {
-                    View briefBg = getViewField(card, "s1");
+                    View briefBg = adapter.resolveBriefBackgroundView(card);
+                    CapsuleStyle.restoreElevation(briefBg);
                     restoreGradientIfNeeded(briefBg);
                     updateChildGenUiViews(card);
-                    try {
-                        XposedHelpers.callMethod(card, "l0");
-                    } catch (Throwable ignored) {}
+                    adapter.restoreBriefCardExtra(card, sHookMap, readCardDarkAmount(card));
                 }
 
-                try {
-                    XposedHelpers.callMethod(card, "E");
-                } catch (Throwable ignored) {}
+                adapter.triggerShapeRefresh(card, sHookMap);
             }
         } finally {
             XposedHelpers.setAdditionalInstanceField(card, "nb_restoring", Boolean.FALSE);
@@ -1628,31 +3031,67 @@ public class NowBarHook implements IXposedHookLoadPackage {
     }
 
     private static void setCardViewColorAndStyle(View cardView, int argbColor, boolean useBlur, float radius) {
-        setCardViewColorAndStyle(cardView, argbColor, useBlur, radius, null);
+        setCardViewColorAndStyle(cardView, argbColor, useBlur, radius, null, 1.0f);
     }
 
     private static void setCardViewColorAndStyle(View cardView, int argbColor, boolean useBlur, float radius, int[] grad) {
+        setCardViewColorAndStyle(cardView, argbColor, useBlur, radius, grad, 1.0f);
+    }
+
+    private static void setCardViewColorAndStyle(View cardView, int argbColor, boolean useBlur, float radius, int[] grad, float visibility) {
+        int fallbackRadiusPx = useBlur ? OneUiBlurSpec.radiusPx(argbColor) : 0;
+        int tintArgb = useBlur ? OneUiBlurSpec.tint(argbColor) : argbColor;
+        int[] tintGrad = (useBlur && grad != null && grad.length >= 2)
+                ? new int[]{OneUiBlurSpec.tint(grad[0]), OneUiBlurSpec.tint(grad[1])}
+                : grad;
+        setCardViewColorAndStyle(cardView, tintArgb, useBlur, fallbackRadiusPx, radius, tintGrad, visibility, false);
+    }
+
+    private static void setCardViewColorAndStyle(
+            View cardView, int argbColor, boolean useBlur, int blurRadiusPx,
+            float radius, int[] grad, float visibility, boolean drawBorderInForeground) {
         if (cardView == null) return;
+        if (visibility <= 0.005f) {
+            CapsuleStyle.transparent(cardView);
+            return;
+        }
         if (grad != null && grad.length >= 2) {
-            setCardViewGradientAndStyle(cardView, grad[0], grad[1], useBlur, radius);
+            setCardViewGradientAndStyle(
+                    cardView, grad[0], grad[1], useBlur, blurRadiusPx, radius, visibility, drawBorderInForeground);
             return;
         }
         if (useBlur) {
-            setCardBackgroundColor(cardView, argbColor, radius);
-            applyBlurInfo(cardView, radius, argbColor);
+            CapsuleStyle.glass(cardView, argbColor, argbColor, blurRadiusPx, radius, visibility, drawBorderInForeground);
         } else {
             clearBlurInfo(cardView);
-            setCardBackgroundColor(cardView, argbColor, radius);
+            setCardBackgroundColor(cardView, ConfigManager.scaleAlpha(argbColor, visibility), radius);
+            CapsuleStyle.setElevationScale(cardView, visibility);
         }
     }
 
-    private static void setCardViewGradientAndStyle(View view, int start, int end, boolean blur, float radius) {
-        CapsuleStyle.gradient(view, start, end, radius);
-        if (blur) CapsuleStyle.blur(view, radius, Color.TRANSPARENT);
-        else clearBlurInfo(view);
+    private static void setCardViewGradientAndStyle(
+            View view, int start, int end, boolean blur, int blurRadiusPx,
+            float radius, float visibility, boolean drawBorderInForeground) {
+        if (visibility <= 0.005f) {
+            CapsuleStyle.transparent(view);
+            return;
+        }
+        if (blur) {
+            CapsuleStyle.glass(view, start, end, blurRadiusPx, radius, visibility, drawBorderInForeground);
+        } else {
+            clearBlurInfo(view);
+            CapsuleStyle.gradient(view,
+                    ConfigManager.scaleAlpha(start, visibility),
+                    ConfigManager.scaleAlpha(end, visibility),
+                    radius);
+            CapsuleStyle.setElevationScale(view, visibility);
+        }
     }
 
-    private static void restoreGradientIfNeeded(View view) { CapsuleStyle.restoreGradient(view); }
+    private static void restoreGradientIfNeeded(View view) {
+        CapsuleStyle.restoreGradient(view);
+        CapsuleStyle.releaseBlur(view);
+    }
 
     private static void setCardBackgroundColor(View view, int color) {
         setCardBackgroundColor(view, color, 100f);
@@ -1664,74 +3103,433 @@ public class NowBarHook implements IXposedHookLoadPackage {
 
     private static void clearBlurInfo(View view) { CapsuleStyle.clearBlur(view); }
 
-    private static void applyBlurInfo(View view, float radius, int color) {
-        if (!CapsuleStyle.blur(view, radius, color)) setCardBackgroundColor(view, color, radius);
+    // --- Layer 1: Immutable ResourceEntryName Lookup & Diagnostics ---
+
+    private static final Set<String> DUMPED_CARD_CLASSES = Collections.synchronizedSet(new HashSet<String>());
+
+    private static View findViewByEntryName(View root, String entryName) {
+        return NowBarCardAdapter.findViewByEntryName(root, entryName);
     }
 
-    // --- Reflection Helpers searching class hierarchy ---
-
-    private static Field findFieldHierarchy(Class<?> cls, String name) {
-        return ReflectionCache.field(cls, name);
+    private static String getResourceEntryNameSafe(View v) {
+        return NowBarCardAdapter.getResourceEntryNameSafe(v);
     }
+
+    private static boolean looksLikeNowBarCardTree(View v) {
+        if (!(v instanceof ViewGroup)) return false;
+        String cls = v.getClass().getName();
+        if (cls.contains("NowBar") && cls.endsWith("CardView")) return true;
+        return findViewByEntryName(v, "stack_background_cardview") != null
+                || findViewByEntryName(v, "nowbar_cardview_background") != null
+                || findViewByEntryName(v, "nowbar_cardview_background_for_now_brief") != null;
+    }
+
+    private static void syncResidualAodContainers(View card, boolean clearForAod, View primaryA, View primaryB) {
+        if (card == null) return;
+        syncResidualAodTarget(card, clearForAod);
+        View mpsm = findViewByEntryName(card, "nowbar_cardview_mpsm_background");
+        if (mpsm != null && mpsm != primaryA && mpsm != primaryB) {
+            syncResidualAodTarget(mpsm, clearForAod);
+        }
+        View briefBg = findViewByEntryName(card, "nowbar_cardview_background_for_now_brief");
+        if (briefBg != null && briefBg != primaryA && briefBg != primaryB) {
+            syncResidualAodTarget(briefBg, clearForAod);
+        }
+        syncNamedBackgroundDescendants(card, 0, clearForAod, primaryA, primaryB);
+    }
+
+    private static void syncResidualAodTarget(View target, boolean clearForAod) {
+        if (target == null) return;
+        if (clearForAod) {
+            boolean hasBg = target.getBackground() != null;
+            boolean hasFg = Build.VERSION.SDK_INT >= 23 && target.getForeground() != null;
+            boolean hasStyle = XposedHelpers.getAdditionalInstanceField(target, "nb_style") != null;
+            if (hasBg || hasFg || hasStyle) {
+                CapsuleStyle.transparent(target);
+            }
+        } else if (XposedHelpers.getAdditionalInstanceField(target, "nb_style") != null) {
+            CapsuleStyle.restoreElevation(target);
+            restoreGradientIfNeeded(target);
+        }
+    }
+
+    private static void syncNamedBackgroundDescendants(
+            View node, int depth, boolean clearForAod, View primaryA, View primaryB) {
+        if (!(node instanceof ViewGroup) || depth > 2) return;
+        ViewGroup vg = (ViewGroup) node;
+        int count = Math.min(vg.getChildCount(), 16);
+        for (int i = 0; i < count; i++) {
+            View child = vg.getChildAt(i);
+            if (child == null) continue;
+            if (child != primaryA && child != primaryB) {
+                String entry = getResourceEntryNameSafe(child);
+                if (isCapsuleBackgroundEntry(entry)) {
+                    syncResidualAodTarget(child, clearForAod);
+                }
+            }
+            if (child instanceof ViewGroup && depth < 2) {
+                syncNamedBackgroundDescendants(child, depth + 1, clearForAod, primaryA, primaryB);
+            }
+        }
+    }
+
+    private static boolean isCapsuleBackgroundEntry(String entry) {
+        if (entry == null || entry.isEmpty()) return false;
+        if (entry.contains("shader") || entry.contains("icon") || entry.contains("badge")
+                || entry.contains("button") || entry.contains("progress")
+                || entry.contains("album") || entry.contains("art")
+                || entry.contains("setting") || entry.contains("expand")) {
+            return false;
+        }
+        return entry.contains("cardview_background")
+                || entry.contains("background_cardview")
+                || entry.endsWith("_background");
+    }
+
+    private static void captureExpandedTreeDiagnosticsDelayed(final View card) {
+        if (card == null) return;
+        captureExpandedTreeDiagnosticsIfNeeded(card, false);
+        Handler h = getMainHandler();
+        if (h == null) return;
+        final WeakReference<View> ref = new WeakReference<>(card);
+        h.postDelayed(new Runnable() {
+            @Override
+            public void run() {
+                View c = ref.get();
+                if (c != null && c.isAttachedToWindow() && !isCollapsedLockscreenCapsule(c)) {
+                    captureExpandedTreeDiagnosticsIfNeeded(c, true);
+                }
+            }
+        }, 320L);
+    }
+
+    private static void captureExpandedTreeDiagnosticsIfNeeded(final View card) {
+        captureExpandedTreeDiagnosticsIfNeeded(card, false);
+    }
+
+    private static void captureExpandedTreeDiagnosticsIfNeeded(final View card, boolean bypassThrottle) {
+        if (card == null) return;
+        try {
+            long now = System.nanoTime();
+            boolean first = sLastExpandedTreeDump.isEmpty();
+            String expLeak = inspectMediaExpandedLeak(card);
+            boolean leakChanged = !expLeak.equals(sLastExpandedLeak);
+            sLastExpandedLeak = expLeak;
+            if (!bypassThrottle && !first && !leakChanged && (now - sLastExpandedDiagPushNs) < 1_000_000_000L) {
+                return;
+            }
+            sLastExpandedDiagPushNs = now;
+            StringBuilder treeSb = new StringBuilder();
+            Object rawTracked = XposedHelpers.getAdditionalInstanceField(card, "nb_expanded");
+            Boolean nativeExp = readNativeExpandedState(card);
+            float vis = getCardAodVisibility(card);
+            ConfigManager.Config cfg = sConfig;
+            treeSb.append("Card: ").append(card.getClass().getName())
+                  .append(" (id=").append(getResourceEntryNameSafe(card))
+                  .append(" vis=").append(String.format(Locale.US, "%.2f", vis))
+                  .append(" hideAod=").append(cfg != null && cfg.hideBgOnAod)
+                  .append(" lockMode=").append(readCardLockscreenMode(card))
+                  .append(" dozing=").append(readCardDozing(card))
+                  .append(" dark=").append(String.format(Locale.US, "%.2f", readCardDarkAmount(card)))
+                  .append(" nativeExp=").append(nativeExp)
+                  .append(" trackedExp=").append(rawTracked)
+                  .append(" state=").append(getCardStateValue(card))
+                  .append(" styled=").append(XposedHelpers.getAdditionalInstanceField(card, "nb_custom_applied"))
+                  .append(" leak=").append(expLeak)
+                  .append(")\n");
+            appendViewTree(treeSb, card, 1, 14);
+            sLastExpandedTreeDump = treeSb.toString();
+            pushDiagnosticsReport(card);
+        } catch (Throwable ignored) {}
+    }
+
+    private static void captureTreeDiagnosticsIfNeeded(final View card, boolean aodHiddenMode, float vis) {
+        if (card == null) return;
+        try {
+            final String clsName = card.getClass().getName();
+            boolean isNewClass = DUMPED_CARD_CLASSES.add(clsName);
+            long now = System.nanoTime();
+            boolean shouldPush = false;
+
+            if (aodHiddenMode) {
+                String leak = inspectAodSurfaceLeak(card);
+                boolean leakChanged = !leak.equals(sLastAodLeak);
+                sLastAodLeak = leak;
+                if (sLastAodTreeDump.isEmpty() || leakChanged || (now - sLastAodDiagPushNs) >= 2_000_000_000L) {
+                    sLastAodDiagPushNs = now;
+                    StringBuilder treeSb = new StringBuilder();
+                    treeSb.append("Card: ").append(clsName).append(" (id=").append(getResourceEntryNameSafe(card))
+                          .append(" vis=").append(String.format(Locale.US, "%.2f", vis))
+                          .append(" lockMode=").append(readCardLockscreenMode(card))
+                          .append(" dozing=").append(readCardDozing(card))
+                          .append(" leak=").append(leak).append(")\n");
+                    appendViewTree(treeSb, card, 1, 6);
+                    sLastAodTreeDump = treeSb.toString();
+                    shouldPush = true;
+                }
+            } else {
+                View expandRoot = clsName.endsWith("NowBarMediaCardView")
+                        ? findViewByEntryName(card, "expand_content_rootview") : null;
+                boolean midCollapse = expandRoot != null
+                        && expandRoot.getVisibility() == View.VISIBLE
+                        && expandRoot.getAlpha() > 0.05f;
+                if (sLastLockTreeDump.isEmpty()
+                        || (!midCollapse && (isNewClass
+                                || (vis >= 0.995f && (now - sLastLockDiagPushNs) >= 3_000_000_000L)))) {
+                    sLastLockDiagPushNs = now;
+                    StringBuilder treeSb = new StringBuilder();
+                    treeSb.append("Card: ").append(clsName).append(" (id=").append(getResourceEntryNameSafe(card))
+                          .append(" vis=").append(String.format(Locale.US, "%.2f", vis))
+                          .append(" lockMode=").append(readCardLockscreenMode(card))
+                          .append(" dozing=").append(readCardDozing(card)).append(")\n");
+                    appendViewTree(treeSb, card, 1, 6);
+                    sLastLockTreeDump = treeSb.toString();
+                    shouldPush = true;
+                }
+            }
+
+            if (shouldPush) {
+                pushDiagnosticsReport(card);
+            }
+        } catch (Throwable ignored) {}
+    }
+
+    private static void pushDiagnosticsReport(View card) {
+        if (card == null) return;
+        final Context ctx = card.getContext() != null ? card.getContext().getApplicationContext() : sSysUiContext;
+        if (ctx == null) return;
+
+        final StringBuilder sb = new StringBuilder();
+        appendSystemUiTelemetry(sb);
+        sb.append("\n=== Live NowBar View Tree (Lockscreen) ===\n");
+        sb.append(sLastLockTreeDump.isEmpty() ? "<Waiting for Lockscreen card render>\n" : sLastLockTreeDump);
+        sb.append("\n=== Live NowBar View Tree (Media Expanded) ===\n");
+        sb.append(sLastExpandedTreeDump.isEmpty() ? "<No Media Expanded sample captured yet>\n" : sLastExpandedTreeDump);
+        sb.append("\n=== Live NowBar View Tree (AOD Hide-Bg) ===\n");
+        sb.append(sLastAodTreeDump.isEmpty() ? "<No AOD hideBgOnAod sample captured yet>\n" : sLastAodTreeDump);
+        pushDiagnosticsDumpAsync(ctx, sb.toString());
+    }
+
+    private static void appendSystemUiTelemetry(StringBuilder sb) {
+        sb.append("=== SystemUI Runtime Status ===\n");
+        sb.append("hookTimeContext: ").append(sHookTimeContextSource)
+          .append(" | sysUiContextSet=").append(sSysUiContext != null)
+          .append(" | adapter=").append(activeAdapter().getAdapterName()).append('\n');
+        sb.append("hookMapSource: ").append(sHookMapSource)
+          .append(" | hookMapTarget=").append(sHookMapTarget).append('\n');
+        sb.append("layer1Hooked=").append(sLayer1Hooked)
+          .append(" | layer2CoreHooked=").append(sLayer2CoreHooked)
+          .append(" | layer2WakeHooks=").append(sLayer2WakeCount)
+          .append(" | layer3Hooks=").append(sLayer3Count)
+          .append(" | pendingCLs=").append(PENDING_LAYER2_CLASSLOADERS.size()).append('\n');
+        sb.append("activeCards=").append(ACTIVE_CARDS.size())
+          .append(" | screenReceiver=").append(sReceiverRegistered)
+          .append(" | wakeWatchActive=").append(System.nanoTime() < sWakeUntilNs).append('\n');
+        if (sLastCardSummary != null && !sLastCardSummary.isEmpty()) {
+            sb.append("lastCard: ").append(sLastCardSummary).append('\n');
+        }
+        if (sLastLockSummary != null && !sLastLockSummary.isEmpty()) {
+            sb.append("lastLock: ").append(sLastLockSummary).append('\n');
+        }
+        sb.append("lastAod: ").append((sLastAodSummary != null && !sLastAodSummary.isEmpty()) ? sLastAodSummary : "<none>")
+          .append(" | aodLeak=").append(sLastAodLeak)
+          .append(" | expandedLeak=").append(sLastExpandedLeak).append('\n');
+    }
+
+    private static String inspectAodSurfaceLeak(View card) {
+        if (card == null) return "none";
+        StringBuilder leaks = new StringBuilder();
+        collectAodSurfaceLeaks(card, card, 0, leaks);
+        return leaks.length() == 0 ? "clean" : "AOD_BG_LEAK: " + leaks.toString();
+    }
+
+    private static String inspectMediaExpandedLeak(View card) {
+        if (card == null) return "none";
+        if (isCardInSettingMode(card) || !shouldCustomizeCatMedia()) return "skipped";
+        NowBarCardAdapter adapter = activeAdapter();
+        StringBuilder leaks = new StringBuilder();
+        View o1 = adapter.resolveMediaBackdropSurface(card);
+        View t1 = adapter.resolveMediaSettingBgSurface(card);
+        View p1 = adapter.resolveMediaPillSurface(card);
+        View expandRoot = adapter.resolveExpandRootView(card);
+        View v1 = adapter.resolveMediaShaderView(card);
+        View w1 = adapter.resolveMediaShaderParent(card);
+        appendSurfaceLeak(o1, leaks);
+        appendSurfaceLeak(t1, leaks);
+        appendSurfaceLeak(p1, leaks);
+        appendSurfaceLeak(expandRoot, leaks);
+        if (v1 != null && v1.getVisibility() == View.VISIBLE && v1.getAlpha() > 0.05f) {
+            if (leaks.length() > 0) leaks.append("; ");
+            leaks.append("shader[v1].a=").append(String.format(Locale.US, "%.2f", v1.getAlpha()));
+        }
+        if (w1 != null && w1.getVisibility() == View.VISIBLE && w1.getAlpha() > 0.05f) {
+            if (leaks.length() > 0) leaks.append("; ");
+            leaks.append("shaderParent[w1].a=").append(String.format(Locale.US, "%.2f", w1.getAlpha()));
+        }
+        return leaks.length() == 0 ? "clean" : "MEDIA_BG_LEAK: " + leaks.toString();
+    }
+
+    private static void appendSurfaceLeak(View v, StringBuilder leaks) {
+        if (v == null || v.getVisibility() != View.VISIBLE || v.getAlpha() <= 0.05f) return;
+        String entry = getResourceEntryNameSafe(v);
+        String label = entry.isEmpty() ? v.getClass().getSimpleName() : v.getClass().getSimpleName() + "[id/" + entry + "]";
+        if (CapsuleStyle.hasBlurInfo(v)) {
+            if (leaks.length() > 0) leaks.append("; ");
+            leaks.append(label).append(".blur=1");
+        }
+        String bgLeak = describeOpaqueDrawable(v, v.getBackground(), false);
+        if (bgLeak != null) {
+            if (leaks.length() > 0) leaks.append("; ");
+            leaks.append(label).append('=').append(bgLeak);
+        }
+        if (Build.VERSION.SDK_INT >= 23) {
+            String fgLeak = describeOpaqueDrawable(v, v.getForeground(), true);
+            if (fgLeak != null) {
+                if (leaks.length() > 0) leaks.append("; ");
+                leaks.append(label).append(".fg=").append(fgLeak);
+            }
+        }
+    }
+
+    private static void collectAodSurfaceLeaks(View rootCard, View v, int depth, StringBuilder leaks) {
+        if (v == null || depth > 4) return;
+        String entry = getResourceEntryNameSafe(v);
+        boolean isInnerControl = !entry.isEmpty()
+                && (entry.contains("action") || entry.contains("icon") || entry.contains("badge")
+                        || entry.contains("button") || entry.contains("progress")
+                        || entry.contains("setting") || entry.contains("expand"));
+        boolean isSurface = !isInnerControl && ((v == rootCard)
+                || isCapsuleBackgroundEntry(entry)
+                || v.getClass().getName().contains("CardView"));
+        if (isSurface) {
+            appendSurfaceLeak(v, leaks);
+        }
+        if (v instanceof ViewGroup && depth < 4) {
+            ViewGroup vg = (ViewGroup) v;
+            int count = Math.min(vg.getChildCount(), 16);
+            for (int i = 0; i < count; i++) {
+                collectAodSurfaceLeaks(rootCard, vg.getChildAt(i), depth + 1, leaks);
+            }
+        }
+    }
+
+    private static String describeOpaqueDrawable(View v, android.graphics.drawable.Drawable d, boolean isForeground) {
+        if (d == null) return null;
+        int alpha = d.getAlpha();
+        if (alpha <= 0) return null;
+        if (d instanceof android.graphics.drawable.ColorDrawable) {
+            int c = ((android.graphics.drawable.ColorDrawable) d).getColor();
+            if ((c >>> 24) == 0) return null;
+            return "ColorDrawable#" + Integer.toHexString(c) + "(a=" + alpha + ")";
+        }
+        if (d instanceof android.graphics.drawable.GradientDrawable) {
+            if (Build.VERSION.SDK_INT >= 24) {
+                android.content.res.ColorStateList csl = ((android.graphics.drawable.GradientDrawable) d).getColor();
+                if (csl != null) {
+                    int c = csl.getDefaultColor();
+                    if ((c >>> 24) == 0) return null;
+                    return "GradientDrawable#" + Integer.toHexString(c) + "(a=" + alpha + ")";
+                }
+            }
+            return "GradientDrawable(a=" + alpha + ")";
+        }
+        if (!isForeground && v != null) {
+            Method cardBgGetter = ReflectionCache.method(v.getClass(), "getCardBackgroundColor");
+            if (cardBgGetter != null) {
+                try {
+                    Object res = cardBgGetter.invoke(v);
+                    if (res instanceof android.content.res.ColorStateList) {
+                        int c = ((android.content.res.ColorStateList) res).getDefaultColor();
+                        if ((c >>> 24) == 0) return null;
+                        return d.getClass().getSimpleName() + "/cardBg#" + Integer.toHexString(c) + "(a=" + alpha + ")";
+                    }
+                } catch (Throwable ignored) {}
+            }
+        }
+        return d.getClass().getSimpleName() + "(a=" + alpha + ")";
+    }
+
+    private static void pushDiagnosticsDumpAsync(final Context ctx, final String dump) {
+        if (ctx == null || dump == null) return;
+        if (sIoHandler != null) {
+            sIoHandler.post(new Runnable() {
+                @Override
+                public void run() {
+                    try {
+                        Bundle extras = new Bundle();
+                        extras.putString("dump", dump);
+                        ctx.getContentResolver().call(NowBarConfigProvider.CONTENT_URI, "update_diagnostics", null, extras);
+                    } catch (Throwable ignored) {}
+                }
+            });
+        }
+    }
+
+    private static void appendDrawableSummary(
+            StringBuilder sb, String label, String alphaLabel, android.graphics.drawable.Drawable d) {
+        if (d == null) return;
+        sb.append(' ').append(label).append('=').append(d.getClass().getSimpleName());
+        if (d instanceof android.graphics.drawable.ColorDrawable) {
+            sb.append('#').append(Integer.toHexString(((android.graphics.drawable.ColorDrawable) d).getColor()));
+        } else if (d instanceof android.graphics.drawable.GradientDrawable && Build.VERSION.SDK_INT >= 24) {
+            android.content.res.ColorStateList csl = ((android.graphics.drawable.GradientDrawable) d).getColor();
+            if (csl != null) {
+                sb.append('#').append(Integer.toHexString(csl.getDefaultColor()));
+            }
+        }
+        sb.append(' ').append(alphaLabel).append('=').append(d.getAlpha());
+    }
+
+    private static void appendViewTree(StringBuilder sb, View v, int depth, int maxDepth) {
+        if (v == null || depth > maxDepth) return;
+        for (int i = 0; i < depth; i++) sb.append("  ");
+        sb.append(v.getClass().getSimpleName());
+        String entry = getResourceEntryNameSafe(v);
+        if (!entry.isEmpty()) sb.append(" [id/").append(entry).append(']');
+        sb.append(" sz=").append(v.getWidth()).append('x').append(v.getHeight())
+          .append(" vis=").append(v.getVisibility())
+          .append(" a=").append(String.format(Locale.US, "%.2f", v.getAlpha()));
+        float elev = v.getElevation();
+        if (elev > 0.01f) {
+            sb.append(" elev=").append(String.format(Locale.US, "%.1f", elev));
+        }
+        if (CapsuleStyle.hasBlurInfo(v)) {
+            sb.append(" blur=1");
+        }
+        appendDrawableSummary(sb, "bg", "bgA", v.getBackground());
+        if (Build.VERSION.SDK_INT >= 23 && v.getForeground() != null) {
+            appendDrawableSummary(sb, "fg", "fgA", v.getForeground());
+        }
+        android.content.res.ColorStateList tint = v.getBackgroundTintList();
+        if (tint != null) {
+            sb.append(" tint=#").append(Integer.toHexString(tint.getDefaultColor()));
+        }
+        Method cardBgGetter = ReflectionCache.method(v.getClass(), "getCardBackgroundColor");
+        if (cardBgGetter != null) {
+            try {
+                Object res = cardBgGetter.invoke(v);
+                if (res instanceof android.content.res.ColorStateList) {
+                    sb.append(" cardBg=#").append(Integer.toHexString(((android.content.res.ColorStateList) res).getDefaultColor()));
+                }
+            } catch (Throwable ignored) {}
+        }
+        sb.append('\n');
+        if (v instanceof ViewGroup && depth < maxDepth) {
+            ViewGroup vg = (ViewGroup) v;
+            int count = Math.min(vg.getChildCount(), 16);
+            for (int i = 0; i < count; i++) {
+                appendViewTree(sb, vg.getChildAt(i), depth + 1, maxDepth);
+            }
+        }
+    }
+
+    // --- Reflection Helpers (delegated to NowBarCardAdapter) ---
 
     private static Object getFieldValue(Object obj, String fieldName) {
-        if (obj == null) return null;
-        try {
-            Field f = findFieldHierarchy(obj.getClass(), fieldName);
-            if (f != null) return f.get(obj);
-        } catch (Throwable ignored) {}
-        return null;
+        return NowBarCardAdapter.getFieldValue(obj, fieldName);
     }
 
     private static Object callMethodNoArgs(Object obj, String methodName) {
-        if (obj == null) return null;
-        try {
-            Method m = ReflectionCache.method(obj.getClass(), methodName);
-            return m == null ? null : m.invoke(obj, NO_ARGUMENTS);
-        } catch (Throwable ignored) {}
-        return null;
-    }
-
-    private static View getViewField(Object obj, String fieldName) {
-        Object val = getFieldValue(obj, fieldName);
-        return (val instanceof View) ? (View) val : null;
-    }
-
-    private static View getViewFieldOrGetter(Object obj, String fieldName, String getterName) {
-        Object val = getFieldValue(obj, fieldName);
-        if (val instanceof View) return (View) val;
-        val = callMethodNoArgs(obj, getterName);
-        if (val instanceof View) return (View) val;
-        return null;
-    }
-
-    private static Object getObjectFieldOrGetter(Object obj, String fieldName, String getterName) {
-        Object val = getFieldValue(obj, fieldName);
-        if (val != null) return val;
-        return callMethodNoArgs(obj, getterName);
-    }
-
-    private static boolean getBooleanFieldOrGetter(Object obj, String fieldName, String getterName, boolean defVal) {
-        Object val = getFieldValue(obj, fieldName);
-        if (val instanceof Boolean) return (Boolean) val;
-        val = callMethodNoArgs(obj, getterName);
-        if (val instanceof Boolean) return (Boolean) val;
-        return defVal;
-    }
-
-    private static int getIntFieldOrGetter(Object obj, String fieldName, String getterName, int defVal) {
-        Object val = getFieldValue(obj, fieldName);
-        if (val instanceof Integer) return (Integer) val;
-        val = callMethodNoArgs(obj, getterName);
-        if (val instanceof Integer) return (Integer) val;
-        return defVal;
-    }
-
-    private static float getFloatFieldOrGetter(Object obj, String fieldName, String getterName, float defVal) {
-        Object val = getFieldValue(obj, fieldName);
-        if (val instanceof Float) return (Float) val;
-        val = callMethodNoArgs(obj, getterName);
-        if (val instanceof Float) return (Float) val;
-        return defVal;
+        return NowBarCardAdapter.callMethodNoArgs(obj, methodName);
     }
 }

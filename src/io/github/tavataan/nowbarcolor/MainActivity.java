@@ -1,11 +1,18 @@
 package io.github.tavataan.nowbarcolor;
 
+import android.animation.Animator;
+import android.animation.AnimatorListenerAdapter;
 import android.app.Activity;
 import android.app.AlertDialog;
+import android.content.ClipData;
+import android.content.ClipboardManager;
 import android.content.Context;
 import android.content.DialogInterface;
+import android.content.pm.PackageInfo;
+import android.os.Build;
 import android.graphics.Canvas;
 import android.graphics.Color;
+import android.graphics.Insets;
 import android.graphics.LinearGradient;
 import android.graphics.Paint;
 import android.graphics.PorterDuff;
@@ -28,6 +35,7 @@ import android.view.View;
 import android.view.ViewGroup;
 import android.view.animation.PathInterpolator;
 import android.view.Window;
+import android.view.WindowInsets;
 import android.view.WindowManager;
 import android.widget.Button;
 import android.widget.EditText;
@@ -43,6 +51,8 @@ import android.widget.Toast;
 
 import java.util.ArrayList;
 import java.util.List;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
 import java.util.Locale;
 
 public class MainActivity extends Activity {
@@ -80,7 +90,7 @@ public class MainActivity extends Activity {
 
     // UI References for live updates
     private OneUIMediaCapsuleView mPreviewMediaCapsule;
-    private FrameLayout mLockscreenStage;
+    private CapsulePreviewStage mLockscreenStage;
     private TextView mPreviewModeTag;
 
     private Button mBtnFixedMode;
@@ -102,13 +112,38 @@ public class MainActivity extends Activity {
 
     private Button mBtnStyleSolid;
     private Button mBtnStyleBlur;
+    private TextView mOpacityTitle;
+    private TextView mFinishDescription;
     private SeekBar mOpacitySeekBar;
     private TextView mOpacityValueText;
+    private LinearLayout mBlurTintContainer;
+    private SeekBar mBlurTintSeekBar;
+    private TextView mBlurTintValueText;
+    private boolean mUpdatingSliders = false;
+    private OneUISwitch mHideBgAodSwitch;
+
+    private static final int TAB_GLOBAL = 0;
+    private static final int TAB_INDIVIDUALS = 1;
+    private static final String STATE_CURRENT_TAB = "state_current_tab";
+    private static final PathInterpolator TAB_SWITCH_EASING =
+            new PathInterpolator(0.22f, 1.0f, 0.36f, 1.0f);
 
     private LinearLayout mCategoriesListContainer;
     private String mExpandedCategoryId = null;
 
-    private LinearLayout mMainCol;
+    private ScrollView mGlobalScroll;
+    private ScrollView mIndividualsScroll;
+    private LinearLayout mGlobalCol;
+    private LinearLayout mIndividualsCol;
+    private OneUIFloatingBar mFloatingBar;
+    private int mCurrentTab = TAB_GLOBAL;
+
+    private final ExecutorService mScanExecutor = Executors.newSingleThreadExecutor();
+    private TextView mCompatTitleText;
+    private TextView mCompatDetailText;
+    private volatile HookMap mCachedHookMap;
+    private volatile String mLastScanError;
+    private volatile boolean mScanningAod = false;
 
     private void showLanguageSelectionDialog() {
         final String[] langCodes = new String[]{
@@ -146,14 +181,16 @@ public class MainActivity extends Activity {
     }
 
     private void rebuildFullUi() {
-        if (mMainCol == null) return;
-        mMainCol.removeAllViews();
-        mMainCol.addView(buildHeaderSection());
-        mMainCol.addView(buildMasterSwitchCard());
-        mMainCol.addView(buildLivePreviewCard());
-        mMainCol.addView(buildColorSelectionCard());
-        mMainCol.addView(buildStyleAndOpacityCard());
-        mMainCol.addView(buildCategoriesCatalogCard());
+        if (mGlobalCol == null || mIndividualsCol == null) return;
+        populateGlobalTab();
+        populateIndividualsTab();
+        if (mFloatingBar != null) {
+            mFloatingBar.updateContentDescriptions(
+                    I18n.get(this, "tab_global_cd"),
+                    I18n.get(this, "tab_individual_cd"));
+            mFloatingBar.setSelectedTab(mCurrentTab, false);
+        }
+        switchToTab(mCurrentTab, false);
         refreshEntireUi(false);
     }
 
@@ -179,48 +216,450 @@ public class MainActivity extends Activity {
         super.onCreate(savedInstanceState);
         setupDarkWindow();
 
+        if (savedInstanceState != null) {
+            mCurrentTab = savedInstanceState.getInt(STATE_CURRENT_TAB, TAB_GLOBAL);
+        }
+
         mConfig = ConfigManager.loadFromAppPrefs(this);
         mWallpaperPalette = WallpaperColorHelper.extractLockWallpaperPalette(this, true);
         updateCachedWallpaperInConfig();
 
-        ScrollView rootScroll = new ScrollView(this);
-        rootScroll.setFillViewport(true);
-        rootScroll.setBackgroundColor(0xFF000000);
+        final int padH = dp(18);
+        final int baseGlobalTop = dp(16);
+        final int baseIndividualsTop = dp(28);
+        final int baseBottomScrollPad = dp(104);
+        final int baseBarBottomMargin = dp(18);
+        final int baseBottomScrimH = dp(96);
 
-        mMainCol = new LinearLayout(this);
-        mMainCol.setOrientation(LinearLayout.VERTICAL);
-        int padH = dp(18);
-        mMainCol.setPadding(padH, dp(16), padH, dp(36));
-        rootScroll.addView(mMainCol);
+        FrameLayout rootFrame = new FrameLayout(this);
+        rootFrame.setBackgroundColor(0xFF000000);
 
-        // 1. Header + Status Pill
-        mMainCol.addView(buildHeaderSection());
+        mGlobalScroll = new ScrollView(this);
+        mGlobalScroll.setFillViewport(true);
+        mGlobalScroll.setBackgroundColor(0xFF000000);
+        mGlobalCol = new LinearLayout(this);
+        mGlobalCol.setOrientation(LinearLayout.VERTICAL);
+        mGlobalCol.setPadding(padH, baseGlobalTop, padH, baseBottomScrollPad);
+        mGlobalScroll.addView(mGlobalCol);
+        rootFrame.addView(mGlobalScroll, new FrameLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT));
 
-        // 2. Master Enable Switch Card (Activador del módulo arriba)
-        mMainCol.addView(buildMasterSwitchCard());
+        mIndividualsScroll = new ScrollView(this);
+        mIndividualsScroll.setFillViewport(true);
+        mIndividualsScroll.setBackgroundColor(0xFF000000);
+        mIndividualsCol = new LinearLayout(this);
+        mIndividualsCol.setOrientation(LinearLayout.VERTICAL);
+        mIndividualsCol.setPadding(padH, baseIndividualsTop, padH, baseBottomScrollPad);
+        mIndividualsScroll.addView(mIndividualsCol);
+        rootFrame.addView(mIndividualsScroll, new FrameLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT));
 
-        // 3. Live Preview Card (Vista previa abajo)
-        mMainCol.addView(buildLivePreviewCard());
+        populateGlobalTab();
+        populateIndividualsTab();
 
-        // 4. Color Source Selector (Wide Palette + Lockscreen Wallpaper Button side-by-side)
-        mMainCol.addView(buildColorSelectionCard());
+        final View topScrim = new View(this);
+        topScrim.setClickable(false);
+        topScrim.setFocusable(false);
+        topScrim.setVisibility(View.GONE);
+        topScrim.setBackground(new GradientDrawable(
+                GradientDrawable.Orientation.TOP_BOTTOM,
+                new int[]{0xD9000000, 0x00000000}));
+        FrameLayout.LayoutParams topScrimLp = new FrameLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, dp(40), Gravity.TOP);
+        rootFrame.addView(topScrim, topScrimLp);
 
-        // 5. Visual Style (Solid vs Blur) + Opacity Slider
-        mMainCol.addView(buildStyleAndOpacityCard());
+        final View bottomScrim = new View(this);
+        bottomScrim.setClickable(false);
+        bottomScrim.setFocusable(false);
+        bottomScrim.setBackground(new GradientDrawable(
+                GradientDrawable.Orientation.TOP_BOTTOM,
+                new int[]{0x00000000, 0xCC000000}));
+        FrameLayout.LayoutParams scrimLp = new FrameLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, baseBottomScrimH, Gravity.BOTTOM);
+        rootFrame.addView(bottomScrim, scrimLp);
 
-        // 6. Catalog of All 9 Now Bar Capsule Types (Individual Toggles + Per-Capsule Color Override)
-        mMainCol.addView(buildCategoriesCatalogCard());
+        mFloatingBar = new OneUIFloatingBar(this);
+        mFloatingBar.updateContentDescriptions(
+                I18n.get(this, "tab_global_cd"),
+                I18n.get(this, "tab_individual_cd"));
+        mFloatingBar.setOnTabSelectedListener(new OneUIFloatingBar.OnTabSelectedListener() {
+            @Override
+            public void onTabSelected(int tabIndex) {
+                switchToTab(tabIndex, true);
+            }
+        });
+        FrameLayout.LayoutParams barLp = new FrameLayout.LayoutParams(
+                ViewGroup.LayoutParams.WRAP_CONTENT,
+                ViewGroup.LayoutParams.WRAP_CONTENT,
+                Gravity.BOTTOM | Gravity.CENTER_HORIZONTAL);
+        barLp.bottomMargin = baseBarBottomMargin;
+        rootFrame.addView(mFloatingBar, barLp);
 
-        setContentView(rootScroll);
+        rootFrame.setOnApplyWindowInsetsListener(new View.OnApplyWindowInsetsListener() {
+            @Override
+            public WindowInsets onApplyWindowInsets(View v, WindowInsets insets) {
+                Insets sys = insets.getInsets(
+                        WindowInsets.Type.systemBars() | WindowInsets.Type.displayCutout());
+                mGlobalCol.setPadding(
+                        padH + sys.left,
+                        baseGlobalTop + sys.top,
+                        padH + sys.right,
+                        baseBottomScrollPad + sys.bottom);
+                mIndividualsCol.setPadding(
+                        padH + sys.left,
+                        baseIndividualsTop + sys.top,
+                        padH + sys.right,
+                        baseBottomScrollPad + sys.bottom);
+
+                FrameLayout.LayoutParams tLp =
+                        (FrameLayout.LayoutParams) topScrim.getLayoutParams();
+                if (sys.top > 0) {
+                    topScrim.setVisibility(View.VISIBLE);
+                    tLp.height = sys.top + dp(10);
+                    topScrim.setLayoutParams(tLp);
+                } else {
+                    topScrim.setVisibility(View.GONE);
+                }
+
+                FrameLayout.LayoutParams bScrimLp =
+                        (FrameLayout.LayoutParams) bottomScrim.getLayoutParams();
+                bScrimLp.height = baseBottomScrimH + sys.bottom;
+                bottomScrim.setLayoutParams(bScrimLp);
+
+                FrameLayout.LayoutParams bLp =
+                        (FrameLayout.LayoutParams) mFloatingBar.getLayoutParams();
+                bLp.bottomMargin = baseBarBottomMargin + sys.bottom;
+                mFloatingBar.setLayoutParams(bLp);
+
+                return insets;
+            }
+        });
+
+        mFloatingBar.setSelectedTab(mCurrentTab, false);
+        switchToTab(mCurrentTab, false);
+
+        setContentView(rootFrame);
+        rootFrame.requestApplyInsets();
         refreshEntireUi(true);
+    }
+
+    @Override
+    protected void onSaveInstanceState(Bundle outState) {
+        super.onSaveInstanceState(outState);
+        outState.putInt(STATE_CURRENT_TAB, mCurrentTab);
+    }
+
+    private void populateGlobalTab() {
+        mGlobalCol.removeAllViews();
+        mGlobalCol.addView(buildHeaderSection());
+        mGlobalCol.addView(buildMasterSwitchCard());
+        mGlobalCol.addView(buildCompatibilityCard());
+        mGlobalCol.addView(buildLivePreviewCard());
+        mGlobalCol.addView(buildColorSelectionCard());
+        mGlobalCol.addView(buildStyleAndOpacityCard());
+        updateCompatibilityUi();
+    }
+
+    private View buildCompatibilityCard() {
+        LinearLayout card = createSectionCard();
+        card.setPadding(dp(16), dp(12), dp(16), dp(12));
+
+        LinearLayout row = new LinearLayout(this);
+        row.setOrientation(LinearLayout.HORIZONTAL);
+        row.setGravity(Gravity.CENTER_VERTICAL);
+
+        LinearLayout textCol = new LinearLayout(this);
+        textCol.setOrientation(LinearLayout.VERTICAL);
+
+        mCompatTitleText = new TextView(this);
+        mCompatTitleText.setTextSize(TypedValue.COMPLEX_UNIT_SP, 13.5f);
+        mCompatTitleText.setTypeface(Typeface.create("sans-serif-medium", Typeface.BOLD));
+        mCompatTitleText.setTextColor(0xFFFFFFFF);
+        textCol.addView(mCompatTitleText);
+
+        mCompatDetailText = new TextView(this);
+        mCompatDetailText.setTextSize(TypedValue.COMPLEX_UNIT_SP, 11.5f);
+        mCompatDetailText.setTextColor(0xFF9AA0B4);
+        mCompatDetailText.setPadding(0, dp(2), 0, 0);
+        textCol.addView(mCompatDetailText);
+
+        row.addView(textCol, new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f));
+
+        TextView diagBtn = new TextView(this);
+        diagBtn.setText(I18n.get(this, "export_diag_btn"));
+        diagBtn.setTextColor(0xFF82B1FF);
+        diagBtn.setTextSize(TypedValue.COMPLEX_UNIT_SP, 12f);
+        diagBtn.setTypeface(Typeface.DEFAULT_BOLD);
+        diagBtn.setPadding(dp(12), dp(7), dp(12), dp(7));
+        diagBtn.setBackground(roundRect(0x22448AFF, dp(16), 1, 0x55448AFF));
+        diagBtn.setOnClickListener(new View.OnClickListener() {
+            @Override
+            public void onClick(View v) {
+                showDiagnosticsDialog();
+            }
+        });
+        row.addView(diagBtn);
+
+        card.addView(row);
+        return card;
+    }
+
+    private void ensureAodHooksCached(final boolean forceRescan) {
+        mScanExecutor.execute(new Runnable() {
+            @Override
+            public void run() {
+                try {
+                    PackageInfo pi = getPackageManager().getPackageInfo(AodScanner.AOD_PKG, 0);
+                    HookMap cached = HookMap.loadFromApp(MainActivity.this);
+                    if (!forceRescan && cached != null
+                            && cached.matchesTarget(pi.getLongVersionCode(), pi.lastUpdateTime)) {
+                        mCachedHookMap = cached;
+                        mLastScanError = null;
+                        mScanningAod = false;
+                        runOnUiThread(new Runnable() {
+                            @Override
+                            public void run() {
+                                updateCompatibilityUi();
+                            }
+                        });
+                        return;
+                    }
+                } catch (Throwable ignored) {}
+
+                mScanningAod = true;
+                runOnUiThread(new Runnable() {
+                    @Override
+                    public void run() {
+                        updateCompatibilityUi();
+                    }
+                });
+
+                AodScanner.ScanResult res = AodScanner.scanInstalledAod(MainActivity.this);
+                if (res.map != null) {
+                    HookMap.saveFromApp(MainActivity.this, res.map);
+                    mCachedHookMap = res.map;
+                }
+                mLastScanError = res.error;
+                mScanningAod = false;
+
+                runOnUiThread(new Runnable() {
+                    @Override
+                    public void run() {
+                        updateCompatibilityUi();
+                    }
+                });
+            }
+        });
+    }
+
+    private void updateCompatibilityUi() {
+        if (mCompatTitleText == null || mCompatDetailText == null) return;
+        if (mScanningAod) {
+            mCompatTitleText.setText(I18n.get(this, "aod_compat_scanning"));
+            mCompatTitleText.setTextColor(0xFF82B1FF);
+            mCompatDetailText.setText("DexKit");
+            return;
+        }
+        if (mLastScanError != null) {
+            mCompatTitleText.setText(I18n.get(this, "aod_compat_error"));
+            mCompatTitleText.setTextColor(0xFFFF8A80);
+            mCompatDetailText.setText(mLastScanError);
+            return;
+        }
+        HookMap map = mCachedHookMap != null ? mCachedHookMap : HookMap.loadFromApp(this);
+        if (map == null) {
+            mCompatTitleText.setText(I18n.get(this, "aod_compat_scanning"));
+            mCompatTitleText.setTextColor(0xFF9AA0B4);
+            mCompatDetailText.setText("-");
+            return;
+        }
+        int resolved = map.countResolvedSlots();
+        int total = map.totalSlotCount();
+        if (map.hasCoreHooks()) {
+            mCompatTitleText.setText(I18n.get(this, "aod_compat_ok"));
+            mCompatTitleText.setTextColor(0xFF69F0AE);
+        } else {
+            mCompatTitleText.setText(I18n.get(this, "aod_compat_partial"));
+            mCompatTitleText.setTextColor(0xFFFFD54F);
+        }
+        mCompatDetailText.setText(map.aodVersionName + " (" + map.aodVersionCode + ") · " + resolved + "/" + total);
+    }
+
+    private void showDiagnosticsDialog() {
+        final String report = buildDiagnosticReport();
+        TextView body = new TextView(this);
+        body.setText(report);
+        body.setTextColor(0xFFE0E0E0);
+        body.setTextSize(TypedValue.COMPLEX_UNIT_SP, 11.5f);
+        body.setTypeface(Typeface.MONOSPACE);
+        body.setPadding(dp(18), dp(12), dp(18), dp(12));
+        body.setTextIsSelectable(true);
+
+        ScrollView sc = new ScrollView(this);
+        sc.addView(body);
+
+        new AlertDialog.Builder(this, android.R.style.Theme_DeviceDefault_Dialog_Alert)
+                .setTitle(I18n.get(this, "diag_dialog_title"))
+                .setView(sc)
+                .setPositiveButton(I18n.get(this, "copy_btn"), new DialogInterface.OnClickListener() {
+                    @Override
+                    public void onClick(DialogInterface dialog, int which) {
+                        ClipboardManager cm = (ClipboardManager) getSystemService(Context.CLIPBOARD_SERVICE);
+                        if (cm != null) {
+                            cm.setPrimaryClip(ClipData.newPlainText("NowBarColor Diagnostics", report));
+                            Toast.makeText(MainActivity.this, I18n.get(MainActivity.this, "diag_copied_toast"), Toast.LENGTH_SHORT).show();
+                        }
+                    }
+                })
+                .setNeutralButton(I18n.get(this, "rescan_btn"), new DialogInterface.OnClickListener() {
+                    @Override
+                    public void onClick(DialogInterface dialog, int which) {
+                        ensureAodHooksCached(true);
+                    }
+                })
+                .setNegativeButton(I18n.get(this, "cancel"), null)
+                .show();
+    }
+
+    private String buildDiagnosticReport() {
+        StringBuilder sb = new StringBuilder();
+        sb.append("=== NowBarColor Diagnostics ===\n");
+        sb.append("Device: ").append(Build.MANUFACTURER).append(' ').append(Build.MODEL).append('\n');
+        sb.append("Android: ").append(Build.VERSION.RELEASE).append(" (SDK ").append(Build.VERSION.SDK_INT).append(")\n");
+        sb.append("Module Active (LSPosed): ").append(isModuleActiveInLsposed()).append('\n');
+        sb.append(describePkg("AOD_Service", AodScanner.AOD_PKG));
+        sb.append(describePkg("SystemUI", "com.android.systemui"));
+        sb.append('\n');
+
+        HookMap map = mCachedHookMap != null ? mCachedHookMap : HookMap.loadFromApp(this);
+        if (map != null) {
+            sb.append(map.formatDiagnosticsLines());
+        } else {
+            sb.append("HookMap: <none> (error=").append(mLastScanError).append(")\n");
+        }
+
+        String treeDump = readSysUiDiagnosticsDump();
+        if (!treeDump.isEmpty()) {
+            sb.append('\n').append(treeDump);
+        } else {
+            sb.append("\n=== SystemUI Runtime Status ===\n<No SystemUI report received yet>\n");
+            sb.append("\n=== Live NowBar View Tree ===\n<No lockscreen card captured yet>");
+        }
+        return sb.toString();
+    }
+
+    private String describePkg(String label, String pkg) {
+        try {
+            PackageInfo pi = getPackageManager().getPackageInfo(pkg, 0);
+            return label + ": " + pi.versionName + " (" + pi.getLongVersionCode() + ")\n";
+        } catch (Throwable t) {
+            return label + ": <unavailable: " + t.getClass().getSimpleName() + ">\n";
+        }
+    }
+
+    private String readSysUiDiagnosticsDump() {
+        try {
+            return getSharedPreferences(HookMap.PREF_NAME, Context.MODE_PRIVATE)
+                    .getString("sysui_diag_dump", "");
+        } catch (Throwable ignored) {
+            return "";
+        }
+    }
+
+    private void populateIndividualsTab() {
+        mIndividualsCol.removeAllViews();
+        mIndividualsCol.addView(buildIndividualsHeaderSection());
+        mIndividualsCol.addView(buildCategoriesCatalogCard());
+    }
+
+    private View buildIndividualsHeaderSection() {
+        LinearLayout box = new LinearLayout(this);
+        box.setOrientation(LinearLayout.VERTICAL);
+        box.setPadding(dp(4), dp(4), dp(4), dp(14));
+
+        TextView title = new TextView(this);
+        title.setText(I18n.get(this, "sec_catalog_title"));
+        title.setTextColor(0xFFFFFFFF);
+        title.setTextSize(TypedValue.COMPLEX_UNIT_SP, 22);
+        title.setTypeface(Typeface.create("sans-serif-medium", Typeface.BOLD));
+        title.setLineSpacing(dp(2), 1.08f);
+        box.addView(title);
+
+        return box;
+    }
+
+    private void switchToTab(int tabIndex, boolean animate) {
+        final int nextTab = (tabIndex == TAB_INDIVIDUALS) ? TAB_INDIVIDUALS : TAB_GLOBAL;
+        final View incoming = (nextTab == TAB_INDIVIDUALS) ? mIndividualsScroll : mGlobalScroll;
+        final View outgoing = (nextTab == TAB_INDIVIDUALS) ? mGlobalScroll : mIndividualsScroll;
+        boolean changed = (mCurrentTab != nextTab);
+        mCurrentTab = nextTab;
+
+        updatePreviewAnimationState();
+
+        if (incoming == null || outgoing == null) return;
+
+        incoming.animate().setListener(null);
+        outgoing.animate().setListener(null);
+        incoming.animate().cancel();
+        outgoing.animate().cancel();
+
+        if (!animate || !changed) {
+            incoming.setVisibility(View.VISIBLE);
+            incoming.setAlpha(1f);
+            incoming.setTranslationX(0f);
+            outgoing.setVisibility(View.GONE);
+            outgoing.setAlpha(1f);
+            outgoing.setTranslationX(0f);
+            return;
+        }
+
+        final float shift = dp(14) * (nextTab == TAB_INDIVIDUALS ? 1f : -1f);
+
+        outgoing.setVisibility(View.VISIBLE);
+        outgoing.animate()
+                .alpha(0f)
+                .translationX(-shift * 0.5f)
+                .setDuration(150L)
+                .setInterpolator(TAB_SWITCH_EASING)
+                .setListener(new AnimatorListenerAdapter() {
+                    @Override
+                    public void onAnimationEnd(Animator animation) {
+                        if (mCurrentTab == nextTab) {
+                            outgoing.setVisibility(View.GONE);
+                            outgoing.setAlpha(1f);
+                            outgoing.setTranslationX(0f);
+                        }
+                    }
+                })
+                .start();
+
+        incoming.setVisibility(View.VISIBLE);
+        incoming.setAlpha(0f);
+        incoming.setTranslationX(shift);
+        incoming.animate()
+                .alpha(1f)
+                .translationX(0f)
+                .setDuration(220L)
+                .setInterpolator(TAB_SWITCH_EASING)
+                .setListener(null)
+                .start();
+    }
+
+    private void updatePreviewAnimationState() {
+        if (mPreviewMediaCapsule == null) return;
+        if (mCurrentTab == TAB_GLOBAL) {
+            mPreviewMediaCapsule.startWaveAnimation();
+        } else {
+            mPreviewMediaCapsule.stopWaveAnimation();
+        }
     }
 
     @Override
     protected void onResume() {
         super.onResume();
-        if (mPreviewMediaCapsule != null) {
-            mPreviewMediaCapsule.startWaveAnimation();
-        }
+        updatePreviewAnimationState();
+        ensureAodHooksCached(false);
         new Thread(new Runnable() {
             @Override
             public void run() {
@@ -367,30 +806,7 @@ public class MainActivity extends Activity {
         card.addView(headerRow);
 
         // Simulated Lockscreen Wallpaper Backdrop
-        mLockscreenStage = new FrameLayout(this) {
-            private final Paint p = new Paint(Paint.ANTI_ALIAS_FLAG);
-            private final RectF r = new RectF();
-
-            @Override
-            protected void onDraw(Canvas canvas) {
-                super.onDraw(canvas);
-                int bottomColor = resolveWallpaperBottomColor();
-                p.setStyle(Paint.Style.FILL);
-                p.setShader(null);
-                p.setColor(bottomColor);
-                r.set(0, 0, getWidth(), getHeight());
-                canvas.drawRoundRect(r, dp(22), dp(22), p);
-
-                // Subtle delicate border so the card is cleanly defined regardless of wallpaper brightness
-                p.setStyle(Paint.Style.STROKE);
-                p.setStrokeWidth(dp(1));
-                p.setColor(0x22FFFFFF);
-                float half = dp(0.5f);
-                r.set(half, half, getWidth() - half, getHeight() - half);
-                canvas.drawRoundRect(r, dp(22), dp(22), p);
-                p.setStyle(Paint.Style.FILL);
-            }
-        };
+        mLockscreenStage = new CapsulePreviewStage(this, resolveWallpaperBottomColor());
         mLockscreenStage.setWillNotDraw(false);
         LinearLayout.LayoutParams stageLp = new LinearLayout.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT);
@@ -901,19 +1317,21 @@ public class MainActivity extends Activity {
         styleRow.addView(mBtnStyleBlur, new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f));
         card.addView(styleRow, srlp);
 
-        // Opacity Header Row
+        // Primary Opacity / Blur Intensity Header Row
+        boolean initialBlur = (mConfig.styleMode == ConfigManager.STYLE_BLUR);
         LinearLayout opHeader = new LinearLayout(this);
         opHeader.setOrientation(LinearLayout.HORIZONTAL);
         opHeader.setGravity(Gravity.CENTER_VERTICAL);
 
         TextView opTitle = new TextView(this);
-        opTitle.setText(I18n.get(this, "opacity_title"));
+        mOpacityTitle = opTitle;
+        opTitle.setText(I18n.get(this, initialBlur ? "tint_strength_title" : "opacity_title"));
         opTitle.setTextColor(0xFFFFFFFF);
         opTitle.setTextSize(TypedValue.COMPLEX_UNIT_SP, 14);
         opHeader.addView(opTitle, new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f));
 
         mOpacityValueText = new TextView(this);
-        mOpacityValueText.setText(mConfig.opacity + "%");
+        mOpacityValueText.setText(formatPrimarySliderValue(initialBlur));
         mOpacityValueText.setTextColor(0xFF82B1FF);
         mOpacityValueText.setTextSize(TypedValue.COMPLEX_UNIT_SP, 14.5f);
         mOpacityValueText.setTypeface(Typeface.DEFAULT_BOLD);
@@ -922,7 +1340,7 @@ public class MainActivity extends Activity {
 
         mOpacitySeekBar = new SeekBar(this);
         mOpacitySeekBar.setMax(100);
-        mOpacitySeekBar.setProgress(mConfig.opacity);
+        mOpacitySeekBar.setProgress(initialBlur ? mConfig.blurIntensity : mConfig.opacity);
         LinearLayout.LayoutParams sbLp = new LinearLayout.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT);
         sbLp.topMargin = dp(6);
@@ -930,8 +1348,14 @@ public class MainActivity extends Activity {
         mOpacitySeekBar.setOnSeekBarChangeListener(new SeekBar.OnSeekBarChangeListener() {
             @Override
             public void onProgressChanged(SeekBar seekBar, int progress, boolean fromUser) {
-                mConfig.opacity = progress;
-                mOpacityValueText.setText(progress + "%");
+                if (mUpdatingSliders) return;
+                boolean isBlurMode = (mConfig.styleMode == ConfigManager.STYLE_BLUR);
+                if (isBlurMode) {
+                    mConfig.blurIntensity = OneUiBlurSpec.clampBlurIntensity(progress);
+                } else {
+                    mConfig.opacity = progress;
+                }
+                mOpacityValueText.setText(formatPrimarySliderValue(isBlurMode));
                 if (fromUser) {
                     refreshPreviewOnly();
                 }
@@ -947,24 +1371,139 @@ public class MainActivity extends Activity {
         });
         card.addView(mOpacitySeekBar, sbLp);
 
+        // Compact Second Slider: Tint Opacity (25%..85%, default 60%) for Color Blur mode
+        mBlurTintContainer = new LinearLayout(this);
+        mBlurTintContainer.setOrientation(LinearLayout.VERTICAL);
+        mBlurTintContainer.setVisibility(initialBlur ? View.VISIBLE : View.GONE);
+
+        LinearLayout tintHeader = new LinearLayout(this);
+        tintHeader.setOrientation(LinearLayout.HORIZONTAL);
+        tintHeader.setGravity(Gravity.CENTER_VERTICAL);
+        LinearLayout.LayoutParams thLp = new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT);
+        thLp.topMargin = dp(2);
+
+        TextView tintTitle = new TextView(this);
+        tintTitle.setText(I18n.get(this, "blur_tint_opacity_title"));
+        tintTitle.setTextColor(0xFFE2E6F0);
+        tintTitle.setTextSize(TypedValue.COMPLEX_UNIT_SP, 13.5f);
+        tintHeader.addView(tintTitle, new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f));
+
+        mBlurTintValueText = new TextView(this);
+        int clampedTint = OneUiBlurSpec.clampTintOpacity(mConfig.blurTintOpacity);
+        mBlurTintValueText.setText(clampedTint + "%");
+        mBlurTintValueText.setTextColor(0xFF82B1FF);
+        mBlurTintValueText.setTextSize(TypedValue.COMPLEX_UNIT_SP, 14f);
+        mBlurTintValueText.setTypeface(Typeface.DEFAULT_BOLD);
+        tintHeader.addView(mBlurTintValueText);
+        mBlurTintContainer.addView(tintHeader, thLp);
+
+        mBlurTintSeekBar = new SeekBar(this);
+        mBlurTintSeekBar.setMax(OneUiBlurSpec.MAX_TINT_OPACITY - OneUiBlurSpec.MIN_TINT_OPACITY);
+        mBlurTintSeekBar.setProgress(clampedTint - OneUiBlurSpec.MIN_TINT_OPACITY);
+        LinearLayout.LayoutParams tsbLp = new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT);
+        tsbLp.topMargin = dp(4);
+        tsbLp.bottomMargin = dp(8);
+        mBlurTintSeekBar.setOnSeekBarChangeListener(new SeekBar.OnSeekBarChangeListener() {
+            @Override
+            public void onProgressChanged(SeekBar seekBar, int progress, boolean fromUser) {
+                if (mUpdatingSliders) return;
+                int tintOp = OneUiBlurSpec.clampTintOpacity(OneUiBlurSpec.MIN_TINT_OPACITY + progress);
+                mConfig.blurTintOpacity = tintOp;
+                if (mBlurTintValueText != null) {
+                    mBlurTintValueText.setText(tintOp + "%");
+                }
+                if (fromUser) {
+                    refreshPreviewOnly();
+                }
+            }
+
+            @Override
+            public void onStartTrackingTouch(SeekBar seekBar) {}
+
+            @Override
+            public void onStopTrackingTouch(SeekBar seekBar) {
+                refreshEntireUi(true);
+            }
+        });
+        mBlurTintContainer.addView(mBlurTintSeekBar, tsbLp);
+        card.addView(mBlurTintContainer);
+
+        mFinishDescription = new TextView(this);
+        mFinishDescription.setTextColor(0xFFB0B8C8);
+        mFinishDescription.setTextSize(TypedValue.COMPLEX_UNIT_SP, 12f);
+        mFinishDescription.setText(I18n.get(this, initialBlur ? "finish_blur_desc" : "finish_solid_desc"));
+        card.addView(mFinishDescription);
+
+        View divider = new View(this);
+        divider.setBackgroundColor(0xFF38383B);
+        LinearLayout.LayoutParams divLp = new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, Math.max(1, dp(1)));
+        divLp.topMargin = dp(14);
+        divLp.bottomMargin = dp(12);
+        card.addView(divider, divLp);
+
+        LinearLayout aodRow = new LinearLayout(this);
+        aodRow.setOrientation(LinearLayout.HORIZONTAL);
+        aodRow.setGravity(Gravity.CENTER_VERTICAL);
+
+        LinearLayout aodTextCol = new LinearLayout(this);
+        aodTextCol.setOrientation(LinearLayout.VERTICAL);
+        aodTextCol.setPadding(0, 0, dp(12), 0);
+
+        TextView aodTitle = new TextView(this);
+        aodTitle.setText(I18n.get(this, "hide_bg_aod_title"));
+        aodTitle.setTextColor(0xFFFFFFFF);
+        aodTitle.setTextSize(TypedValue.COMPLEX_UNIT_SP, isCompact ? 13.5f : 14f);
+        aodTitle.setTypeface(Typeface.create("sans-serif-medium", Typeface.BOLD));
+        aodTextCol.addView(aodTitle);
+
+        TextView aodDesc = new TextView(this);
+        aodDesc.setText(I18n.get(this, "hide_bg_aod_desc"));
+        aodDesc.setTextColor(0xFF9AA0B4);
+        aodDesc.setTextSize(TypedValue.COMPLEX_UNIT_SP, 12f);
+        aodDesc.setPadding(0, dp(3), 0, 0);
+        aodTextCol.addView(aodDesc);
+
+        aodRow.addView(aodTextCol, new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f));
+
+        mHideBgAodSwitch = new OneUISwitch(this);
+        mHideBgAodSwitch.setChecked(mConfig.hideBgOnAod);
+        mHideBgAodSwitch.setOnCheckedChangeListener(new OneUISwitch.OnCheckedChangeListener() {
+            @Override
+            public void onCheckedChanged(OneUISwitch view, boolean isChecked) {
+                mConfig.hideBgOnAod = isChecked;
+                refreshEntireUi(true);
+            }
+        });
+        aodRow.addView(mHideBgAodSwitch);
+
+        aodRow.setOnClickListener(new View.OnClickListener() {
+            @Override
+            public void onClick(View v) {
+                boolean next = !mConfig.hideBgOnAod;
+                mConfig.hideBgOnAod = next;
+                if (mHideBgAodSwitch != null) {
+                    mHideBgAodSwitch.setChecked(next, true);
+                }
+                refreshEntireUi(true);
+            }
+        });
+
+        card.addView(aodRow);
+
         return card;
     }
 
     private View buildCategoriesCatalogCard() {
         LinearLayout card = createSectionCard();
 
-        TextView secTitle = new TextView(this);
-        secTitle.setText(I18n.get(this, "sec_catalog_title"));
-        secTitle.setTextColor(0xFF82B1FF);
-        secTitle.setTextSize(TypedValue.COMPLEX_UNIT_SP, 11);
-        secTitle.setTypeface(Typeface.DEFAULT_BOLD);
-        card.addView(secTitle);
-
         TextView secSub = new TextView(this);
         secSub.setText(I18n.get(this, "sec_catalog_desc"));
         secSub.setTextColor(0xFF9AA0B4);
         secSub.setTextSize(TypedValue.COMPLEX_UNIT_SP, 12);
-        secSub.setPadding(0, dp(4), 0, dp(12));
+        secSub.setPadding(0, 0, 0, dp(12));
         card.addView(secSub);
 
         mCategoriesListContainer = new LinearLayout(this);
@@ -1110,12 +1649,15 @@ public class MainActivity extends Activity {
             TextView chipText = new TextView(this);
             String chipLabel;
             if (cc.useCustomColor) {
+                int effCatOp = (mConfig.styleMode == ConfigManager.STYLE_BLUR)
+                        ? OneUiBlurSpec.clampTintOpacity(cc.customOpacity)
+                        : cc.customOpacity;
                 if (cc.customColorMode == ConfigManager.MODE_GRADIENT) {
-                    chipLabel = " " + I18n.get(this, "tab_gradient") + (cc.useCustomOpacity ? " • " + cc.customOpacity + "%" : "");
+                    chipLabel = " " + I18n.get(this, "tab_gradient") + (cc.useCustomOpacity ? " • " + effCatOp + "%" : "");
                 } else {
                     String curLang = I18n.getEffectiveLanguage(this);
                     String customWord = "es".equals(curLang) ? "Propio" : ("pt".equals(curLang) ? "Próprio" : "Custom");
-                    chipLabel = " " + customWord + (cc.useCustomOpacity ? " • " + cc.customOpacity + "%" : "");
+                    chipLabel = " " + customWord + (cc.useCustomOpacity ? " • " + effCatOp + "%" : "");
                 }
             } else {
                 chipLabel = isGlobGrad ? (" Global • " + I18n.get(this, "tab_gradient")) : " Global";
@@ -1221,7 +1763,13 @@ public class MainActivity extends Activity {
         final int[] gradEnd = new int[]{ cc.useCustomColor ? cc.customGradientEnd : mConfig.gradientEndColor };
         final boolean[] gradEditingEnd = new boolean[]{ false };
         final boolean[] hasCustomOpacity = new boolean[]{ cc.useCustomOpacity };
-        final int[] selectedOpacity = new int[]{ cc.useCustomOpacity ? cc.customOpacity : mConfig.opacity };
+        final boolean isBlurDialog = (mConfig.styleMode == ConfigManager.STYLE_BLUR);
+        final int defaultDialogOpacity = isBlurDialog
+                ? OneUiBlurSpec.clampTintOpacity(mConfig.blurTintOpacity)
+                : mConfig.opacity;
+        final int[] selectedOpacity = new int[]{ cc.useCustomOpacity
+                ? (isBlurDialog ? OneUiBlurSpec.clampTintOpacity(cc.customOpacity) : cc.customOpacity)
+                : defaultDialogOpacity };
         final int[] currentTab = new int[]{ cc.useCustomColor ? cc.customColorMode : (mConfig.colorMode == ConfigManager.MODE_GRADIENT ? 2 : (mConfig.colorMode == ConfigManager.MODE_LOCK_WALLPAPER ? 1 : 0)) };
 
         final AlertDialog.Builder builder = new AlertDialog.Builder(this);
@@ -1315,29 +1863,7 @@ public class MainActivity extends Activity {
         previewHeader.setPadding(0, 0, 0, dp(6));
         card.addView(previewHeader);
 
-        FrameLayout dialogStage = new FrameLayout(this) {
-            private final Paint p = new Paint(Paint.ANTI_ALIAS_FLAG);
-            private final RectF r = new RectF();
-
-            @Override
-            protected void onDraw(Canvas canvas) {
-                super.onDraw(canvas);
-                int bottomColor = resolveWallpaperBottomColor();
-                p.setStyle(Paint.Style.FILL);
-                p.setShader(null);
-                p.setColor(bottomColor);
-                r.set(0, 0, getWidth(), getHeight());
-                canvas.drawRoundRect(r, dp(20), dp(20), p);
-
-                p.setStyle(Paint.Style.STROKE);
-                p.setStrokeWidth(dp(1));
-                p.setColor(0x22FFFFFF);
-                float half = dp(0.5f);
-                r.set(half, half, getWidth() - half, getHeight() - half);
-                canvas.drawRoundRect(r, dp(20), dp(20), p);
-                p.setStyle(Paint.Style.FILL);
-            }
-        };
+        CapsulePreviewStage dialogStage = new CapsulePreviewStage(this, resolveWallpaperBottomColor());
         dialogStage.setWillNotDraw(false);
         dialogStage.setPadding(dp(12), dp(16), dp(12), dp(16));
         LinearLayout.LayoutParams dStageLp = new LinearLayout.LayoutParams(
@@ -1594,7 +2120,7 @@ public class MainActivity extends Activity {
         opHeader.setPadding(0, dp(4), 0, dp(2));
 
         TextView opTitle = new TextView(this);
-        opTitle.setText(I18n.get(this, "opacity_title"));
+        opTitle.setText(I18n.get(this, isBlurDialog ? "blur_tint_opacity_title" : "opacity_title"));
         opTitle.setTextColor(0xFFFFFFFF);
         opTitle.setTextSize(TypedValue.COMPLEX_UNIT_SP, 13f);
         opHeader.addView(opTitle, new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f));
@@ -1608,8 +2134,12 @@ public class MainActivity extends Activity {
         gradContainer.addView(opHeader);
 
         final SeekBar gradOpacitySeekBar = new SeekBar(this);
-        gradOpacitySeekBar.setMax(100);
-        gradOpacitySeekBar.setProgress(selectedOpacity[0]);
+        gradOpacitySeekBar.setMax(isBlurDialog
+                ? (OneUiBlurSpec.MAX_TINT_OPACITY - OneUiBlurSpec.MIN_TINT_OPACITY)
+                : 100);
+        gradOpacitySeekBar.setProgress(isBlurDialog
+                ? (OneUiBlurSpec.clampTintOpacity(selectedOpacity[0]) - OneUiBlurSpec.MIN_TINT_OPACITY)
+                : selectedOpacity[0]);
         LinearLayout.LayoutParams sbLp = new LinearLayout.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT);
         sbLp.topMargin = dp(4);
@@ -1622,17 +2152,26 @@ public class MainActivity extends Activity {
         final Runnable updateDialogState = new Runnable() {
             @Override
             public void run() {
-                int effOpacity = (hasCustomOpacity[0] && !isUsingGlobal[0]) ? selectedOpacity[0] : mConfig.opacity;
-                int clampedOpacity = Math.max(0, Math.min(100, effOpacity));
-                int alpha = Math.round((clampedOpacity / 100.0f) * 255.0f);
                 boolean isBlur = (mConfig.styleMode == ConfigManager.STYLE_BLUR);
-                int strokeColor = isBlur ? 0x55FFFFFF : 0x22FFFFFF;
+                int rawEffOpacity = (hasCustomOpacity[0] && !isUsingGlobal[0])
+                        ? selectedOpacity[0]
+                        : (isBlur ? mConfig.blurTintOpacity : mConfig.opacity);
+                int clampedOpacity = isBlur
+                        ? OneUiBlurSpec.clampTintOpacity(rawEffOpacity)
+                        : Math.max(0, Math.min(100, rawEffOpacity));
+                int alpha = isBlur
+                        ? OneUiBlurSpec.tintAlphaFromPercent(clampedOpacity)
+                        : Math.round((clampedOpacity / 100.0f) * 255.0f);
+                int blurRadiusPx = isBlur ? mConfig.resolveBlurRadiusPx() : 0;
+                int strokeColor = isBlur ? 0x26FFFFFF : 0x22FFFFFF;
 
                 if (isUsingGlobal[0]) {
                     if (mConfig.colorMode == ConfigManager.MODE_GRADIENT) {
-                        int[] g = mConfig.resolveGlobalGradientArgb();
+                        int[] g = isBlur
+                                ? mConfig.resolveGlobalBlurGradientArgb()
+                                : mConfig.resolveGlobalGradientArgb();
                         if (g != null) {
-                            dialogCapsule.setCapsuleGradient(g[0], g[1], isBlur, strokeColor);
+                            dialogCapsule.setCapsuleGradient(g[0], g[1], isBlur, blurRadiusPx, strokeColor);
                             GradientDrawable gd = new GradientDrawable(
                                     GradientDrawable.Orientation.LEFT_RIGHT,
                                     new int[]{mConfig.gradientStartColor | 0xFF000000, mConfig.gradientEndColor | 0xFF000000});
@@ -1643,14 +2182,14 @@ public class MainActivity extends Activity {
                     } else {
                         int baseRgb = mConfig.resolveBaseRgbForCategory(meta.id, liveWall);
                         int finalArgb = (alpha << 24) | (baseRgb & 0x00FFFFFF);
-                        dialogCapsule.setCapsuleColor(finalArgb, isBlur, strokeColor);
+                        dialogCapsule.setCapsuleColor(finalArgb, isBlur, blurRadiusPx, strokeColor);
                         headerIconBg.setBackground(roundRect(baseRgb | 0xFF000000, dp(14), dp(1), 0x33FFFFFF));
                     }
                 } else {
                     if (selectedMode[0] == ConfigManager.MODE_GRADIENT) {
                         int startArgb = (alpha << 24) | (gradStart[0] & 0x00FFFFFF);
                         int endArgb = (alpha << 24) | (gradEnd[0] & 0x00FFFFFF);
-                        dialogCapsule.setCapsuleGradient(startArgb, endArgb, isBlur, strokeColor);
+                        dialogCapsule.setCapsuleGradient(startArgb, endArgb, isBlur, blurRadiusPx, strokeColor);
                         GradientDrawable gd = new GradientDrawable(
                                 GradientDrawable.Orientation.LEFT_RIGHT,
                                 new int[]{gradStart[0] | 0xFF000000, gradEnd[0] | 0xFF000000});
@@ -1659,7 +2198,7 @@ public class MainActivity extends Activity {
                         headerIconBg.setBackground(gd);
                     } else {
                         int finalArgb = (alpha << 24) | (selectedColor[0] & 0x00FFFFFF);
-                        dialogCapsule.setCapsuleColor(finalArgb, isBlur, strokeColor);
+                        dialogCapsule.setCapsuleColor(finalArgb, isBlur, blurRadiusPx, strokeColor);
                         headerIconBg.setBackground(roundRect(selectedColor[0] | 0xFF000000, dp(14), dp(1), 0x33FFFFFF));
                     }
                 }
@@ -1671,7 +2210,8 @@ public class MainActivity extends Activity {
                     String globDesc = (mConfig.colorMode == ConfigManager.MODE_GRADIENT)
                             ? I18n.get(MainActivity.this, "tab_gradient")
                             : String.format("#%06X", (mConfig.resolveBaseRgbForCategory(meta.id, liveWall) & 0x00FFFFFF));
-                    btnResetGlobal.setText("✓ " + I18n.get(MainActivity.this, "using_global_color") + " (" + globDesc + " • " + mConfig.opacity + "%)");
+                    int globalOp = isBlur ? OneUiBlurSpec.clampTintOpacity(mConfig.blurTintOpacity) : mConfig.opacity;
+                    btnResetGlobal.setText("✓ " + I18n.get(MainActivity.this, "using_global_color") + " (" + globDesc + " • " + globalOp + "%)");
                 } else {
                     btnResetGlobal.setBackground(roundRect(0xFF2E2E32, dp(14), 1, 0xFF45454A));
                     btnResetGlobal.setTextColor(0xFFE0E0E5);
@@ -1725,8 +2265,11 @@ public class MainActivity extends Activity {
 
                 // Update opacity texts and seekbar
                 gradOpacityText.setText(clampedOpacity + "%");
-                if (gradOpacitySeekBar.getProgress() != clampedOpacity) {
-                    gradOpacitySeekBar.setProgress(clampedOpacity);
+                int targetBarProgress = isBlur
+                        ? (clampedOpacity - OneUiBlurSpec.MIN_TINT_OPACITY)
+                        : clampedOpacity;
+                if (gradOpacitySeekBar.getProgress() != targetBarProgress) {
+                    gradOpacitySeekBar.setProgress(targetBarProgress);
                 }
 
                 // Update Tab buttons & container visibility
@@ -1826,7 +2369,9 @@ public class MainActivity extends Activity {
             @Override
             public void onProgressChanged(SeekBar seekBar, int progress, boolean fromUser) {
                 if (fromUser) {
-                    selectedOpacity[0] = progress;
+                    selectedOpacity[0] = (mConfig.styleMode == ConfigManager.STYLE_BLUR)
+                            ? OneUiBlurSpec.clampTintOpacity(OneUiBlurSpec.MIN_TINT_OPACITY + progress)
+                            : progress;
                     hasCustomOpacity[0] = true;
                     isUsingGlobal[0] = false;
                     updateDialogState.run();
@@ -1871,7 +2416,9 @@ public class MainActivity extends Activity {
             public void onClick(View v) {
                 isUsingGlobal[0] = true;
                 hasCustomOpacity[0] = false;
-                selectedOpacity[0] = mConfig.opacity;
+                selectedOpacity[0] = (mConfig.styleMode == ConfigManager.STYLE_BLUR)
+                        ? OneUiBlurSpec.clampTintOpacity(mConfig.blurTintOpacity)
+                        : mConfig.opacity;
                 selectedMode[0] = mConfig.colorMode;
                 updateDialogState.run();
             }
@@ -1950,10 +2497,13 @@ public class MainActivity extends Activity {
                         }
                     });
                 } else {
+                    int fallbackOp = (mConfig.styleMode == ConfigManager.STYLE_BLUR)
+                            ? OneUiBlurSpec.clampTintOpacity(mConfig.blurTintOpacity)
+                            : mConfig.opacity;
                     showCustomColorPickerDialog(
                             I18n.get(MainActivity.this, "dialog_color_opacity_prefix") + meta.getTitle(MainActivity.this),
                             selectedColor[0],
-                            hasCustomOpacity[0] ? selectedOpacity[0] : mConfig.opacity,
+                            hasCustomOpacity[0] ? selectedOpacity[0] : fallbackOp,
                             true,
                             new OnColorAndOpacityPickedListener() {
                                 @Override
@@ -1962,7 +2512,9 @@ public class MainActivity extends Activity {
                                     selectedMode[0] = (currentTab[0] == 1) ? ConfigManager.MODE_LOCK_WALLPAPER : ConfigManager.MODE_FIXED_COLOR;
                                     selectedColor[0] = color;
                                     hasCustomOpacity[0] = true;
-                                    selectedOpacity[0] = opacityPercent;
+                                    selectedOpacity[0] = (mConfig.styleMode == ConfigManager.STYLE_BLUR)
+                                            ? OneUiBlurSpec.clampTintOpacity(opacityPercent)
+                                            : opacityPercent;
                                     updateDialogState.run();
                                 }
                             }
@@ -2076,34 +2628,55 @@ public class MainActivity extends Activity {
                 .show();
     }
 
+    private String formatPrimarySliderValue(boolean isBlur) {
+        if (isBlur) {
+            return OneUiBlurSpec.clampBlurIntensity(mConfig.blurIntensity)
+                    + "% (" + mConfig.resolveBlurRadiusPx() + "px)";
+        }
+        return mConfig.opacity + "%";
+    }
+
     private void refreshPreviewOnly() {
+        if (mLockscreenStage != null) mLockscreenStage.setBaseColor(resolveWallpaperBottomColor());
         Integer liveWall = WallpaperColorHelper.resolveForVariant(
                 mWallpaperPalette, mConfig.wallpaperVariant);
 
         if (!mConfig.masterEnabled) {
             mPreviewModeTag.setText(I18n.get(this, "preview_original"));
             if (mPreviewMediaCapsule != null) {
-                mPreviewMediaCapsule.setCapsuleColor(0x99222630, true, 0x33FFFFFF);
+                mPreviewMediaCapsule.setCapsuleColor(0x99222630, false, 0x33FFFFFF);
             }
             return;
         }
 
         boolean isBlur = (mConfig.styleMode == ConfigManager.STYLE_BLUR);
-        int strokeColor = isBlur ? 0x55FFFFFF : 0x22FFFFFF;
+        int blurRadiusPx = isBlur ? mConfig.resolveBlurRadiusPx() : 0;
+        int tintOp = OneUiBlurSpec.clampTintOpacity(mConfig.blurTintOpacity);
+        int strokeColor = isBlur ? 0x26FFFFFF : 0x22FFFFFF;
 
         if (mConfig.colorMode == ConfigManager.MODE_GRADIENT) {
-            int[] grad = mConfig.resolveGlobalGradientArgb();
+            int[] grad = isBlur
+                    ? mConfig.resolveGlobalBlurGradientArgb()
+                    : mConfig.resolveGlobalGradientArgb();
             String bTag = isBlur ? (I18n.get(this, "preview_blur") + " • ") : (I18n.get(this, "preview_solid") + " • ");
-            mPreviewModeTag.setText(bTag + I18n.get(this, "preview_gradient") + " • " + mConfig.opacity + "%");
+            String metrics = isBlur
+                    ? (blurRadiusPx + "px • " + tintOp + "%")
+                    : (mConfig.opacity + "%");
+            mPreviewModeTag.setText(bTag + I18n.get(this, "preview_gradient") + " • " + metrics);
             if (mPreviewMediaCapsule != null && grad != null) {
-                mPreviewMediaCapsule.setCapsuleGradient(grad[0], grad[1], isBlur, strokeColor);
+                mPreviewMediaCapsule.setCapsuleGradient(grad[0], grad[1], isBlur, blurRadiusPx, strokeColor);
             }
         } else {
-            int finalArgb = mConfig.resolveGlobalFinalArgb(liveWall);
+            int finalArgb = isBlur
+                    ? mConfig.resolveGlobalBlurFinalArgb(liveWall)
+                    : mConfig.resolveGlobalFinalArgb(liveWall);
             String bTag2 = isBlur ? (I18n.get(this, "preview_blur") + " • ") : (I18n.get(this, "preview_solid") + " • ");
-            mPreviewModeTag.setText(bTag2 + mConfig.opacity + "%");
+            String metrics = isBlur
+                    ? (blurRadiusPx + "px • " + tintOp + "%")
+                    : (mConfig.opacity + "%");
+            mPreviewModeTag.setText(bTag2 + metrics);
             if (mPreviewMediaCapsule != null) {
-                mPreviewMediaCapsule.setCapsuleColor(finalArgb, isBlur, strokeColor);
+                mPreviewMediaCapsule.setCapsuleColor(finalArgb, isBlur, blurRadiusPx, strokeColor);
             }
         }
 
@@ -2187,10 +2760,44 @@ public class MainActivity extends Activity {
             }
         }
 
-        // 4. Update Style Buttons (Solid vs Blur)
+        // 4. Update Style Buttons & Finish Sliders (Solid vs Color Blur)
         boolean isBlur = (mConfig.styleMode == ConfigManager.STYLE_BLUR);
         styleSelectableButton(mBtnStyleSolid, !isBlur);
         styleSelectableButton(mBtnStyleBlur, isBlur);
+        if (mOpacityTitle != null) mOpacityTitle.setText(I18n.get(this,
+                isBlur ? "tint_strength_title" : "opacity_title"));
+        if (mFinishDescription != null) mFinishDescription.setText(I18n.get(this,
+                isBlur ? "finish_blur_desc" : "finish_solid_desc"));
+        if (mBlurTintContainer != null) {
+            mBlurTintContainer.setVisibility(isBlur ? View.VISIBLE : View.GONE);
+        }
+        mUpdatingSliders = true;
+        try {
+            if (mOpacitySeekBar != null) {
+                int targetPrimary = isBlur ? OneUiBlurSpec.clampBlurIntensity(mConfig.blurIntensity) : mConfig.opacity;
+                if (mOpacitySeekBar.getProgress() != targetPrimary) {
+                    mOpacitySeekBar.setProgress(targetPrimary);
+                }
+            }
+            if (mOpacityValueText != null) {
+                mOpacityValueText.setText(formatPrimarySliderValue(isBlur));
+            }
+            int clampedTint = OneUiBlurSpec.clampTintOpacity(mConfig.blurTintOpacity);
+            if (mBlurTintSeekBar != null) {
+                int targetTintProgress = clampedTint - OneUiBlurSpec.MIN_TINT_OPACITY;
+                if (mBlurTintSeekBar.getProgress() != targetTintProgress) {
+                    mBlurTintSeekBar.setProgress(targetTintProgress);
+                }
+            }
+            if (mBlurTintValueText != null) {
+                mBlurTintValueText.setText(clampedTint + "%");
+            }
+        } finally {
+            mUpdatingSliders = false;
+        }
+        if (mHideBgAodSwitch != null && mHideBgAodSwitch.isChecked() != mConfig.hideBgOnAod) {
+            mHideBgAodSwitch.setChecked(mConfig.hideBgOnAod, false);
+        }
 
         // 5. Rebuild Category Catalog rows & Preview
         rebuildCategoriesList();

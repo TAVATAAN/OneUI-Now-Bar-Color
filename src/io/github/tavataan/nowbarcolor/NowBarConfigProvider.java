@@ -4,6 +4,7 @@ import android.content.ContentProvider;
 import android.content.ContentValues;
 import android.content.Context;
 import android.content.SharedPreferences;
+import android.content.pm.PackageInfo;
 import android.database.Cursor;
 import android.database.MatrixCursor;
 import android.net.Uri;
@@ -27,6 +28,36 @@ public class NowBarConfigProvider extends ContentProvider {
         if ("get_config".equals(method)) {
             Bundle out = new Bundle();
             out.putString("config_json", prefs.getString(ConfigManager.SETTINGS_KEY, ""));
+            return out;
+        } else if ("get_hook_map".equals(method)) {
+            HookMap cached = HookMap.loadFromApp(ctx);
+            boolean needsScan = (cached == null);
+            try {
+                PackageInfo pi = ctx.getPackageManager().getPackageInfo(AodScanner.AOD_PKG, 0);
+                if (cached == null || !cached.matchesTarget(pi.getLongVersionCode(), pi.lastUpdateTime)) {
+                    needsScan = true;
+                }
+            } catch (Throwable ignored) {}
+
+            if (needsScan) {
+                AodScanner.ScanResult res = AodScanner.scanInstalledAod(ctx);
+                if (res.map != null) {
+                    HookMap.saveFromApp(ctx, res.map);
+                    cached = res.map;
+                }
+            }
+            Bundle out = new Bundle();
+            String json = cached != null ? cached.toJson() : "";
+            out.putString("hook_map_json", json != null ? json : "");
+            return out;
+        } else if ("update_diagnostics".equals(method) && extras != null) {
+            SharedPreferences diagPrefs = ctx.getSharedPreferences(HookMap.PREF_NAME, Context.MODE_PRIVATE);
+            diagPrefs.edit().putString("sysui_diag_dump", extras.getString("dump", "")).apply();
+            return new Bundle();
+        } else if ("get_diagnostics".equals(method)) {
+            SharedPreferences diagPrefs = ctx.getSharedPreferences(HookMap.PREF_NAME, Context.MODE_PRIVATE);
+            Bundle out = new Bundle();
+            out.putString("dump", diagPrefs.getString("sysui_diag_dump", ""));
             return out;
         } else if ("update_wallpaper_palette".equals(method) && extras != null) {
             SharedPreferences.Editor ed = prefs.edit();

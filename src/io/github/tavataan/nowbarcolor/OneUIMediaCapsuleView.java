@@ -25,7 +25,7 @@ import android.view.animation.LinearInterpolator;
 import java.io.InputStream;
 
 /**
- * Pixel-perfect replica of Samsung One UI 7 Now Bar Media Capsule.
+ * Illustrative Now Bar preview; actual lockscreen blur uses Samsung's compositor.
  *
  * Visual Specifications:
  * - Proportions: 84dp height with 42dp corner radius (perfect 50% pill shape)
@@ -100,6 +100,7 @@ public class OneUIMediaCapsuleView extends View {
     // Paints
     private final Paint mNotePaint = new Paint(Paint.ANTI_ALIAS_FLAG);
     private final Paint mBgPaint = new Paint(Paint.ANTI_ALIAS_FLAG);
+    private final Paint mGlassSheenPaint = new Paint(Paint.ANTI_ALIAS_FLAG);
     private final Paint mStrokePaint = new Paint(Paint.ANTI_ALIAS_FLAG);
     private final Paint mBevelPaint = new Paint(Paint.ANTI_ALIAS_FLAG);
     private final Paint mAlbumPaint = new Paint(Paint.ANTI_ALIAS_FLAG | Paint.FILTER_BITMAP_FLAG);
@@ -135,6 +136,9 @@ public class OneUIMediaCapsuleView extends View {
     private int mCapsuleColor = 0xFF1E88E5;
     private int mStrokeColor = 0x26FFFFFF;
     private boolean mIsBlur = false;
+    private int mBlurRadiusPx = OneUiBlurSpec.radiusPxFromPercent(OneUiBlurSpec.DEFAULT_BLUR_INTENSITY);
+    private float mGlassSheenHeight = -1f;
+    private float mSpecularStrokeWidthCached = -1f;
 
     // Wave animation state (Samsung nanoTime physics)
     private long mWaveStartTime = 0;
@@ -244,8 +248,17 @@ public class OneUIMediaCapsuleView extends View {
      * Updates the capsule color, stroke, and acoustic wave harmonics dynamically.
      */
     public void setCapsuleColor(int color, boolean isBlur, int strokeColor) {
+        setCapsuleColor(color, isBlur,
+                isBlur ? OneUiBlurSpec.radiusPxFromPercent(OneUiBlurSpec.DEFAULT_BLUR_INTENSITY) : 0,
+                strokeColor);
+    }
+
+    public void setCapsuleColor(int color, boolean isBlur, int blurRadiusPx, int strokeColor) {
         mCapsuleColor = color;
         mIsBlur = isBlur;
+        mBlurRadiusPx = isBlur
+                ? Math.max(OneUiBlurSpec.MIN_RADIUS_PX, Math.min(OneUiBlurSpec.MAX_RADIUS_PX, blurRadiusPx))
+                : 0;
         mStrokeColor = strokeColor;
         mIsGradient = false;
         updateColors();
@@ -256,10 +269,19 @@ public class OneUIMediaCapsuleView extends View {
      * Two-stop horizontal linear gradient: startArgb on the left edge, endArgb on the right edge.
      */
     public void setCapsuleGradient(int startArgb, int endArgb, boolean isBlur, int strokeColor) {
+        setCapsuleGradient(startArgb, endArgb, isBlur,
+                isBlur ? OneUiBlurSpec.radiusPxFromPercent(OneUiBlurSpec.DEFAULT_BLUR_INTENSITY) : 0,
+                strokeColor);
+    }
+
+    public void setCapsuleGradient(int startArgb, int endArgb, boolean isBlur, int blurRadiusPx, int strokeColor) {
         mGradStart = startArgb;
         mGradEnd = endArgb;
         mIsGradient = true;
         mIsBlur = isBlur;
+        mBlurRadiusPx = isBlur
+                ? Math.max(OneUiBlurSpec.MIN_RADIUS_PX, Math.min(OneUiBlurSpec.MAX_RADIUS_PX, blurRadiusPx))
+                : 0;
         mStrokeColor = strokeColor;
         mCapsuleColor = startArgb;
         mGradShaderWidth = -1f; // force shader rebuild
@@ -279,8 +301,32 @@ public class OneUIMediaCapsuleView extends View {
         } else {
             mBgPaint.setColor(0xFFFFFFFF);
         }
-        mStrokePaint.setColor(mStrokeColor);
-        // The 5 wave layers strictly retain their fixed purple palette (isolated from background color picker)
+        if (mIsBlur) {
+            mStrokePaint.setColor(0xFFFFFFFF);
+            mSpecularStrokeWidthCached = -1f;
+        } else {
+            mStrokePaint.setShader(null);
+            mStrokePaint.setColor(mStrokeColor);
+            mSpecularStrokeWidthCached = -1f;
+        }
+
+        int effStart = mIsGradient ? mGradStart : mCapsuleColor;
+        int effEnd = mIsGradient ? mGradEnd : mCapsuleColor;
+        boolean darkFg = OneUiBlurSpec.needsDarkForeground(effStart, effEnd, mIsBlur);
+        boolean shadowFg = !darkFg && OneUiBlurSpec.needsContrastShadow(effStart, effEnd, mIsBlur);
+        int fgColor = darkFg ? OneUiBlurSpec.DARK_CONTENT_COLOR : 0xFFFFFFFF;
+        mTextPaint.setColor(fgColor);
+        mControlsPaint.setColor(fgColor);
+        if (shadowFg) {
+            float sr = dp(2.2f);
+            float sdy = dp(0.7f);
+            mTextPaint.setShadowLayer(sr, 0f, sdy, OneUiBlurSpec.CONTRAST_SHADOW_COLOR);
+            mControlsPaint.setShadowLayer(sr, 0f, sdy, OneUiBlurSpec.CONTRAST_SHADOW_COLOR);
+        } else {
+            mTextPaint.clearShadowLayer();
+            mControlsPaint.clearShadowLayer();
+        }
+        // The 5 wave layers strictly retain their fixed palette (isolated from background color picker)
     }
 
     public void startWaveAnimation() {
@@ -366,10 +412,18 @@ public class OneUIMediaCapsuleView extends View {
         // 1. Stacked Depth: Secondary Curved Bevel Contour (+3dp below)
         float radius = mCapsuleHeight / 2f;
         mBevelRect.set(dp(3f), mBevelOffset, width - dp(3f), mCapsuleHeight + mBevelOffset);
-        canvas.drawRoundRect(mBevelRect, radius, radius, mBevelPaint);
+        if (!mIsBlur) canvas.drawRoundRect(mBevelRect, radius, radius, mBevelPaint);
 
         // 2. Main Capsule Pill Body
         mCapsuleRect.set(0, 0, width, mCapsuleHeight);
+        if (mIsBlur && getParent() instanceof CapsulePreviewStage) {
+            int backdropSave = canvas.save();
+            mClipPath.reset();
+            mClipPath.addRoundRect(mCapsuleRect, radius, radius, Path.Direction.CW);
+            canvas.clipPath(mClipPath);
+            ((CapsulePreviewStage) getParent()).drawBlurredBackdrop(canvas, this, mBlurRadiusPx);
+            canvas.restoreToCount(backdropSave);
+        }
         if (mIsGradient && mGradShaderWidth != width) {
             mGradShaderWidth = width;
             mBgPaint.setShader(new LinearGradient(0, 0, width, 0,
@@ -377,9 +431,22 @@ public class OneUIMediaCapsuleView extends View {
         }
         canvas.drawRoundRect(mCapsuleRect, radius, radius, mBgPaint);
 
-        // 3. Subtle Inner Stroke / Bevel
+        if (mIsBlur) {
+            if (mGlassSheenHeight != mCapsuleHeight) {
+                mGlassSheenHeight = mCapsuleHeight;
+                mGlassSheenPaint.setShader(OneUiBlurSpec.createTopSheenShader(0f, mCapsuleHeight, 1.0f));
+            }
+            canvas.drawRoundRect(mCapsuleRect, radius, radius, mGlassSheenPaint);
+        }
+
+        // 3. Subtle Inner Stroke / Specular Diagonal Glass Border (1dp)
         float halfStroke = dp(0.5f);
         mStrokeRect.set(halfStroke, halfStroke, width - halfStroke, mCapsuleHeight - halfStroke);
+        if (mIsBlur && mSpecularStrokeWidthCached != width) {
+            mSpecularStrokeWidthCached = width;
+            mStrokePaint.setShader(OneUiBlurSpec.createSpecularBorderShader(
+                    halfStroke, halfStroke, width - halfStroke, mCapsuleHeight - halfStroke, 1.0f));
+        }
         canvas.drawRoundRect(mStrokeRect, radius - halfStroke, radius - halfStroke, mStrokePaint);
 
         // 4. Album Art (56dp circle, 14dp left margin, 14dp top margin)
