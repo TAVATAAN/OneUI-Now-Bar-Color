@@ -4,11 +4,11 @@
 
 # Now Bar Color
 
-**Customize the collapsed Now Bar capsule background on Samsung One UI 8.0+ & One UI 9.0+ (Lock Screen)**
+**Customize the collapsed Now Bar capsule background natively on Samsung One UI 8.0, 8.5, and 9.0+ (Lock Screen & AOD)**
 
 [![One UI](https://img.shields.io/badge/One_UI-8.0_%7C_8.5_%7C_9.0+-0072DE?style=flat-square&logo=samsung&logoColor=white)](https://github.com/TAVATAAN/OneUI-Now-Bar-Color/releases)
-[![Framework](https://img.shields.io/badge/Framework-LSPosed-EC407A?style=flat-square)](https://github.com/LSPosed/LSPosed)
-[![Release](https://img.shields.io/badge/Release-v1.3.0-2EA043?style=flat-square)](https://github.com/TAVATAAN/OneUI-Now-Bar-Color/releases/latest)
+[![Framework](https://img.shields.io/badge/Framework-LSPosed_%7C_Vector-EC407A?style=flat-square)](https://modules.lsposed.org/module/io.github.tavataan.nowbarcolor)
+[![Release](https://img.shields.io/badge/Release-v2.0.0-2EA043?style=flat-square)](https://github.com/TAVATAAN/OneUI-Now-Bar-Color/releases/latest)
 [![Languages](https://img.shields.io/badge/I18n-EN_%7C_ES_%7C_PT-8A2BE2?style=flat-square)](#features)
 [![License: MIT](https://img.shields.io/badge/License-MIT-F1E05A?style=flat-square)](LICENSE)
 
@@ -18,15 +18,29 @@
 
 ## Overview
 
-**Now Bar Color** is an advanced LSPosed module for Samsung Galaxy devices running **One UI 8.0, 8.5, and One UI 9.0+**. It provides full control over the background styling of collapsed lock screen Now Bar capsules—applying solid colors, frosted-glass blur effects, smooth two-stop horizontal gradients, and adaptive wallpaper palettes without altering album artwork, notification icons, text colors, or native system animations.
+**Now Bar Color** is an adaptive Xposed/LSPosed module for rooted Samsung Galaxy devices running **One UI 8.0, 8.5, and One UI 9.0+**. Starting with **v2.0.0**, it ships as a **single universal APK with isolated version adapters** powered by on-device **DexKit** bytecode scanning—operating directly on your stock `SystemUI` and `AOD_Service` without replacing system APKs or flashing root ZIPs.
 
-It includes a native One UI companion app with interactive live capsule previews, dynamic audio waveforms, large One UI squircle vector badges with transparent cutouts that preview each capsule's active color or gradient, per-category toggles, independent opacity sliders, and trilingual support (**English, Spanish, and Portuguese**). Deep hooks in `SystemUI` and `FaceWidget`/`AOD` deliver zero-lag styling from frame 0 while completely suppressing Samsung's default chip gradient overlays.
+It gives you full control over collapsed Lock Screen and Always On Display (AOD) Now Bar capsule backgrounds—solid colors, calibrated One UI 8.5-style glass **Color Blur**, smooth two-stop horizontal gradients, and wallpaper-adaptive palettes—while keeping album art, icons, controls, text legibility, and native animations intact.
+
+It also includes a native One UI companion app featuring a live interactive capsule preview stage, real-time animated audio waveforms, squircle vector badges with live color cutouts, per-category toggles, independent opacity and blur/tint sliders, built-in compatibility diagnostics, and **English, Spanish, and Portuguese** localization.
+
+> [!NOTE]
+> **Early-Stage Project Notice, Tested Devices & Active Updates**
+>
+> This project is still **very new and actively maintained**, so visual glitches or firmware-specific bugs can still appear on untested Galaxy models or `AOD_Service` builds. Future updates will keep rolling out to improve compatibility and polish.
+>
+> **v2.0.0 has only been directly tested on:**
+> - **Samsung Galaxy S23 Ultra** — **One UI 9.0**
+> - **Samsung Galaxy S20 FE** — **One UI 8.5**
+> - **Samsung Galaxy S22 Ultra** — **One UI 8.0**
+>
+> If you spot any bug, missing controls, reverted colors, or have a question on another device/build, please message me on Telegram **[@Tava_Mon97](https://t.me/Tava_Mon97)** (use **Copy Diagnostics** inside the app if reporting an issue) or open an issue on GitHub!
 
 ---
 
 ## Screenshots & Examples
 
-Examples showing how custom colors, gradients, and blur effects blend dynamically with lock screen wallpapers and capsule categories:
+Examples showing how custom colors, gradients, and glass blur effects blend dynamically with lock screen wallpapers and capsule categories:
 
 <div align="center">
 
@@ -38,64 +52,31 @@ Examples showing how custom colors, gradients, and blur effects blend dynamicall
 
 ---
 
-## Compatibility & Downloads
+## Compatibility & Downloads (`v2.0.0`)
 
-> [!IMPORTANT]
-> **Critical Architecture & `AOD_Service` Build Requirement — One UI 8.0 / 8.5 vs. One UI 9.0+**
->
-> - **Having One UI 9 does NOT guarantee out-of-the-box compatibility:** Samsung's **`AOD_Service` (`com.samsung.android.app.aodservice`)** changes drastically across different device branches, models, and firmware builds.
-> - **Mandatory Base `AOD_Service` Build (`896548000`):** It is **strictly mandatory** to run the exact same base build of `AOD_Service` used to develop this module—extracted from the **Galaxy S26 FE**, build **`896548000`** (`v8.9.65.48`). Running any other `AOD_Service` variant or branch will cause graphical glitches in the capsule or prevent the module from working entirely.
-> - **Running One UI 8.0 or 8.5 (Suite Required):** Lower One UI versions do **not** include the One UI 9 `AODService` natively. Installing `NowBarColor.apk` alone will have no effect on One UI 8.x. You **must** flash `NowBar_LockScreen_Suite.zip` (via KernelSU, Magisk, or APatch), which installs and stabilizes the required components out of the box on the first boot.
-> - **Running One UI 9.0 or newer (Standalone APK + Mandatory AOD_Service):** Do **not** flash the Suite ZIP. Your device runs One UI 9, but you **must** install the standalone **`AOD_Service.apk`** (`896548000`) provided in this release alongside `NowBarColor.apk`.
+**v2.0.0 works natively out of the box with a single APK (`NowBarColor.apk`)** across stock **One UI 8.0, 8.5, and 9.0+** (`arm64-v8a`):
 
-All official builds are available on the [Releases page](https://github.com/TAVATAAN/OneUI-Now-Bar-Color/releases):
+- **No separate `AOD_Service` APK required:** `AodScanner` inspects your installed `com.samsung.android.app.aodservice` via **DexKit**, caches a per-build `HookMap`, and automatically selects the isolated adapter for your One UI generation (`OneUi80Adapter`, `OneUi85Adapter`, or `OneUi9Adapter`).
+- **No root Suite ZIP required or recommended:** Do **not** flash legacy v1.3 root ZIPs over stock One UI 8.0 / 8.5 / 9.0+ ROMs—`v2.0.0` runs natively through LSPosed / Vector alone. *(Legacy v1.3.0 files are no longer bundled in v2.0.0 and remain archived strictly in the old [`4-1.3.0`](https://github.com/TAVATAAN/OneUI-Now-Bar-Color/releases/tag/4-1.3.0) release.)*
 
-| Target System | Package File | Package Type / Description | Direct Download |
+All official v2.0.0 builds are published across GitHub Releases and the LSPosed / Vector module catalog:
+
+| Channel / Target | File / Catalog Entry | Description | Link |
 | :--- | :--- | :--- | :--- |
-| **All Supported Versions** | `NowBarColor.apk` | LSPosed Module APK (v1.3.0, `versionCode 4`) | [Download APK (v1.3.0)](https://github.com/TAVATAAN/OneUI-Now-Bar-Color/releases/download/4-1.3.0/NowBarColor.apk) |
-| **One UI 9.0+ (Mandatory Base)** | `AOD_Service.apk` | S26 FE Base App (Build `896548000` / `v8.9.65.48`) | [Download AOD_Service.apk (896548000)](https://github.com/TAVATAAN/OneUI-Now-Bar-Color/releases/download/4-1.3.0/AOD_Service.apk) |
-| **One UI 8.0 & 8.5 ONLY** | `NowBar_LockScreen_Suite.zip` | All-in-One Root Module (KernelSU / Magisk / APatch) | [Download Suite (v1.3.0)](https://github.com/TAVATAAN/OneUI-Now-Bar-Color/releases/download/4-1.3.0/NowBar_LockScreen_Suite.zip) |
+| **GitHub Releases (`5-2.0.0`)** | `NowBarColor.apk` | Universal Adaptive Module APK (`v2.0.0`, `versionCode 5`) | [Download APK (v2.0.0)](https://github.com/TAVATAAN/OneUI-Now-Bar-Color/releases/download/5-2.0.0/NowBarColor.apk) |
+| **LSPosed & Vector Repo** | `io.github.tavataan.nowbarcolor` | Official online repository listing & in-manager updates | [View in LSPosed / Vector Repo](https://modules.lsposed.org/module/io.github.tavataan.nowbarcolor) |
 
 ---
 
 ## Installation Guide
 
-### Option A: One UI 8.0 & 8.5 Devices (1-Step All-in-One Suite)
-
-1. Ensure **LSPosed Framework** (Zygisk or JingMatrix/Vector fork) is installed on your rooted device (**KernelSU**, **Magisk v26+**, or **APatch**).
-2. Download [`NowBar_LockScreen_Suite.zip`](https://github.com/TAVATAAN/OneUI-Now-Bar-Color/releases/download/4-1.3.0/NowBar_LockScreen_Suite.zip).
-3. Open **KernelSU**, **Magisk**, or **APatch Manager**, go to the **Modules** tab, and flash `NowBar_LockScreen_Suite.zip`.
-4. Reboot your device.
-5. **Done!** Both `NowBarColor` and `LockScreenFix_OU9` are automatically activated in LSPosed upon boot—no manual setup in LSPosed Manager is needed. Open **Now Bar Color** from your app drawer to customize your capsules.
-
-<details>
-<summary><b>📦 What is included inside NowBar_LockScreen_Suite.zip? (Click to expand)</b></summary>
-<br>
-
-- **One UI 9 Core Lock Screen & AOD Apps:** `AODService` (`v8.9.65.48` / build `896548000` extracted from Galaxy S26 FE), `DressRoom`, `GalleryWidget`, and `SamsungGallery` pre-configured for `priv-app` mounting.
-- **Good Lock Companion Plugin:** `LockStar` (`v9.0.00.5`) automatically installed with required system permissions.
-- **LockScreenFix (LSPosed Module by TAVATAAN):** `LockScreenFix_OU9` v2.1.7 stabilizes all ported One UI 9 lock screen, AOD, media controls, and gallery components on One UI 8.0 / 8.5.
-- **NowBarColor v1.3.0 (LSPosed Module):** Full Now Bar background customization app and hooking engine.
-- **Automatic LSPosed SQLite Activation & Permissions:** Automatically registers and enables both `NowBarColor` and `LockScreenFix_OU9` directly inside LSPosed's configuration database (`modules_config.db`) with all required target scopes and runtime permissions (`WRITE_SETTINGS`, storage, calendar).
-
-</details>
-
-### Option B: One UI 9.0+ Devices (Standalone APK)
-
-> [!NOTE]
-> If your ROM is already on **One UI 9.0 or higher**, do **not** flash `NowBar_LockScreen_Suite.zip`.
-
-1. Download [`AOD_Service.apk` (S26 FE — Build `896548000`)](https://github.com/TAVATAAN/OneUI-Now-Bar-Color/releases/download/4-1.3.0/AOD_Service.apk) and install it as an update over your system's Always On Display service.
-   > 💡 **Troubleshooting Cross-Branch Installation Failure (KernelSU):**
-   > If `AOD_Service.apk` fails to install as an update due to signature/branch verification differences across Samsung firmware branches, disable the official release check first by running the following command in a root terminal:
-   > ```bash
-   > su -c "/data/adb/ksu/bin/resetprop -n ro.build.official.release false"
-   > ```
-   > Then install `AOD_Service.apk` again.
-2. Download and install [`NowBarColor.apk`](https://github.com/TAVATAAN/OneUI-Now-Bar-Color/releases/download/4-1.3.0/NowBarColor.apk) (or install/update directly from the LSPosed Repository).
-3. Open **LSPosed Manager** and enable **Now Bar Color** with its recommended scopes (**System UI** and **Always On Display**).
-4. Restart System UI (`su -c killall com.android.systemui`) or reboot your device.
-5. Open **Now Bar Color** from your launcher to configure your colors, gradients, blur, and per-capsule styles.
+1. Ensure **LSPosed** (or **Vector** / JingMatrix fork) is installed and active on your rooted Samsung Galaxy device running **One UI 8.0, 8.5, or 9.0+**.
+2. Download and install [`NowBarColor.apk` (v2.0.0)](https://github.com/TAVATAAN/OneUI-Now-Bar-Color/releases/download/5-2.0.0/NowBarColor.apk) directly from GitHub Releases or from the **LSPosed / Vector Repository**. *(Uses the same signing key as v1.3.0, so updating in place works cleanly.)*
+3. Open **LSPosed Manager** (or **Vector Manager**), enable **Now Bar Color**, and make sure its recommended scopes are checked:
+   - **`System UI`** (`com.android.systemui`)
+   - **`Always On Display`** (`com.samsung.android.app.aodservice`)
+4. Open **Now Bar Color** once so DexKit can inspect and cache the `HookMap` for your device's `AOD_Service` build, then reboot or restart System UI (`su -c killall com.android.systemui`).
+5. Customize global or per-capsule colors, gradients, blur radius, tint opacity, and check live hook health in the **Diagnostics** section inside the app.
 
 ---
 
@@ -105,9 +86,9 @@ All official builds are available on the [Releases page](https://github.com/TAVA
 
 | Finish Modes | Adaptive Wallpaper Extraction |
 | :--- | :--- |
-| **Pure Solid Color:** Vibrant, high-contrast backgrounds. | **Bottom Zone:** Samples the exact wallpaper region where the Now Bar rests. |
-| **Two-Stop Horizontal Gradients:** Smooth custom or preset transitions per capsule or globally. | **Monet Accent:** Uses the system's dynamic Material You color scheme. |
-| **Color Blur:** Translucent frosted-glass blur effect with adaptive color mixing. | **Dominant Background:** Matches the primary lock screen tone. |
+| **Pure Solid Color:** Crisp, high-contrast solid capsule backgrounds with per-category opacity. | **Bottom Zone:** Samples the exact lower lock screen wallpaper region behind the Now Bar. |
+| **Two-Stop Horizontal Gradients:** Smooth custom or preset two-color gradients globally or per capsule. | **Monet Accent:** Pulls Samsung's dynamic Material You system accent palette. |
+| **One UI 8.5 Glass Color Blur:** Calibrated `16px–100px` frosted blur (default `~60%` / `~65px`), dedicated **Tint Opacity** slider (`25%–85%`, default `~60%`), saturated `SemBlurInfo` ColorCurve rendering, and a subtle `~1dp` diagonal specular glass rim + surface sheen mirrored in the live preview stage. | **Dominant Background:** Matches the primary lock screen wallpaper color tone. |
 
 ### Granular Per-Category Control with Dynamic Vector Badges
 
@@ -128,25 +109,29 @@ Each of the **10 Now Bar capsule categories** includes a large One UI squircle b
 
 ### Under-the-Hood Architecture & Companion App
 
-- **Zero-Lag Hot Creation (Frame-0 Styling):** Deep hooks in `NowBarCardStackView` intercept newly created capsules in real time, while complete suppression of Samsung's native notification chip gradient overlay (`NowBarCardGradientView`) ensures custom palettes render from frame 0 without flicker.
-- **Native One UI Companion App:** Real-time animated media capsule preview with dynamic audio waveform bars, touch-responsive HSV color pickers, and a built-in language switcher (**English, Spanish, and Portuguese**).
+- **1 APK + Isolated One UI Adapters:** `AodScanner` uses native **DexKit** to resolve obfuscated `AOD_Service` / `FaceWidget` classes, methods, and fields on first run, persists a schema-versioned `HookMap` via `NowBarConfigProvider`, and dispatches cleanly through `NowBarAdapterFactory` to `OneUi80Adapter` (8.0), `OneUi85Adapter` (8.5), or `OneUi9Adapter` (9.0+).
+- **Zero-Lag Frame-0 Styling & Wake Recovery:** Hooks inside `NowBarCardStackView` and capsule lifecycle paths style cards from frame 0, suppress Samsung's native `NowBarCardGradientView` chip overlay, preserve controls in One UI 8.5 foreground state, and prevent factory-color resets during One UI 8.0 expand/collapse and wake/unlock transitions.
+- **Native One UI Companion App:** Features an interactive `CapsulePreviewStage` replicating real wallpaper blur + glass sheen, animated `OneUIMediaCapsuleView` waveforms, `OneUIFloatingBar` navigation, `HsvColorPickerView`, built-in diagnostics export, and an in-app **EN / ES / PT** language switcher.
 
 ---
 
 ## Building from Source
 
-The repository includes a lightweight, self-contained Python build script (`build.py`) compatible with Linux, Android (Termux), and desktop environments with Android SDK tools installed:
+The repository includes a self-contained Python build pipeline (`build.py`) compatible with Linux, Android (Termux/AGY), and desktop environments with Android SDK build tools (`android-34` + `build-tools/34.0.0`):
 
 ```bash
 # 1. Clone the repository
 git clone https://github.com/TAVATAAN/OneUI-Now-Bar-Color.git
 cd OneUI-Now-Bar-Color
 
-# 2. Build and sign the APK
+# 2. Run the host verification test suite (optional)
+python3 tests/run_host_tests.py --android-jar <path-to-android.jar>
+
+# 3. Build and sign the APK
 python3 build.py
 ```
 
-The signed APK will be generated at:
+The signed APK is output to:
 
 ```text
 build/NowBarColor.apk
@@ -157,35 +142,48 @@ build/NowBarColor.apk
 ## Project Structure
 
 ```text
-├── AndroidManifest.xml             # Package definition, permissions & LSPosed metadata
-├── assets/                         # Module bootstrap (xposed_init)
-├── docs/screenshots/               # Collage preview images
-├── meta_xposed/                    # LSPosed repository metadata (module.prop, scope.list)
-├── res/                            # Vector capsule icons, launcher icons, strings & arrays
+├── AndroidManifest.xml             # Package definition, provider, permissions & Xposed metadata
+├── assets/                         # Module bootstrap (xposed_init) and preview album art
+├── docs/screenshots/               # Showcase screenshots for GitHub & LSPosed/Vector catalog
+├── libs/                           # Bundled DexKit native library (arm64-v8a) & runtime JARs
+├── meta_xposed/                    # LSPosed/Vector repository metadata (module.prop, scope.list)
+├── res/                            # Vector capsule icons, launcher icon, strings & arrays
 ├── src/io/github/tavataan/nowbarcolor/
-│   ├── MainActivity.java           # One UI settings UI, dynamic vector badges & Live Preview
-│   ├── NowBarHook.java             # Core LSPosed hooking engine for SystemUI & FaceWidget/AOD
+│   ├── MainActivity.java           # One UI settings UI, diagnostics card & category controls
+│   ├── NowBarHook.java             # LSPosed entry point & SystemUI/AOD multi-layer hook engine
+│   ├── AodScanner.java             # On-device DexKit bytecode scanner for AOD_Service builds
+│   ├── HookMap.java                # Schema-versioned cache of discovered classes, methods & fields
+│   ├── NowBarConfigProvider.java   # Cross-process ContentProvider sharing settings & HookMap
+│   ├── NowBarCardAdapter.java      # Adapter contract decoupling One UI generation differences
+│   ├── NowBarAdapterFactory.java   # Runtime adapter selector (One UI 8.0 / 8.5 / 9.0+)
+│   ├── OneUi80Adapter.java         # Isolated adapter for One UI 8.0 quirks & wake recovery
+│   ├── OneUi85Adapter.java         # Isolated adapter for One UI 8.5 card visibility/blur behavior
+│   ├── OneUi9Adapter.java          # Isolated adapter for One UI 9.0+ cards & ColorCurve blur
+│   ├── OneUiBlurSpec.java          # Shared blur radius (16-100px) & tint/glass math for hook & UI
 │   ├── CapsuleGradient.java        # Adaptive GradientDrawable tracking internal mutations
-│   ├── CapsuleStyle.java           # Styling pipeline managing Solid, Blur & Gradient states
-│   ├── ReflectionCache.java        # High-performance reflection cache for SystemUI members
-│   ├── ConfigManager.java          # Configuration persistence & 10-category metadata/icons
-│   ├── WallpaperColorHelper.java   # Real-time wallpaper color extractor (Monet, Bottom Zone)
-│   ├── OneUIMediaCapsuleView.java  # Dynamic preview component with live audio waveform bars
+│   ├── CapsuleStyle.java           # Styling pipeline managing Solid, Color Blur & Gradient fills
+│   ├── CapsulePreviewStage.java    # Real-time wallpaper + blur/glass preview stage in the app
+│   ├── OneUIFloatingBar.java       # Floating One UI bottom navigation bar component
+│   ├── OneUIMediaCapsuleView.java  # Dynamic preview capsule with live audio waveform bars
 │   ├── OneUISwitch.java            # Custom Samsung One UI-styled toggle switch
 │   ├── HsvColorPickerView.java     # Touch-responsive HSV color picker
+│   ├── WallpaperColorHelper.java   # Lock screen wallpaper color extractor (Bottom Zone, Monet)
+│   ├── ConfigManager.java          # Configuration persistence & 10-category metadata/icons
+│   ├── ReflectionCache.java        # High-performance reflection cache for SystemUI/AOD members
 │   └── I18n.java                   # Trilingual localization manager (EN, ES, PT)
-├── tests/                          # Automated host test suite
-└── build.py                        # Standalone compilation and packaging pipeline
+├── tests/                          # Automated host unit tests & verification suite
+├── SCOPE & SOURCE_URL & SUMMARY    # Xposed Module Repo catalog metadata files
+└── build.py                        # Standalone compilation, DEX & APK signing pipeline
 ```
 
 ---
 
 ## Feedback, Bug Reports & Support
 
-If you encounter bugs, have feature suggestions, or need help with setup, reach out via Telegram or open an issue on GitHub:
+Because **v2.0.0** is a brand-new adaptive release, feedback on other Galaxy models and One UI builds helps refine future updates! Reach out anytime:
 
-- **Telegram:** [@Tava_Mon97](https://t.me/Tava_Mon97)
-- **GitHub Issues:** [Report an issue or submit a pull request](https://github.com/TAVATAAN/OneUI-Now-Bar-Color/issues)
+- **Telegram:** [@Tava_Mon97](https://t.me/Tava_Mon97) *(recommended — include **Copy Diagnostics** from the app if reporting a bug)*
+- **GitHub Issues:** [Report a bug or open a discussion](https://github.com/TAVATAAN/OneUI-Now-Bar-Color/issues)
 
 ---
 
