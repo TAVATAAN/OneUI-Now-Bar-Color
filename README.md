@@ -44,13 +44,27 @@ It also includes a native One UI companion app featuring an interactive live cap
 
 ## Screenshots & Examples
 
-Lock screen and AOD capsule collages showing custom solid colors, two-stop gradients, and translucent blurs across Now Brief, Music Media, Flashlight, and Samsung Health capsules *(captures from `v1.x`; updated photos, videos, and usage tutorials will be added in a future documentation pass — see the [`6-2.1.0` Release notes](https://github.com/TAVATAAN/OneUI-Now-Bar-Color/releases/tag/6-2.1.0) for live **Image Mode** previews)*:
+### Lock Screen & AOD Capsules
+
+Lock screen and AOD capsule collages showing custom solid colors, two-stop gradients, and translucent blurs across Now Brief, Music Media, Flashlight, and Samsung Health capsules *(captures from `v1.x`; updated lock screen photos, videos, and usage tutorials will be added in a future documentation pass — see the [`6-2.1.0` Release notes](https://github.com/TAVATAAN/OneUI-Now-Bar-Color/releases/tag/6-2.1.0) for live **Image Mode** capsule previews)*:
 
 <div align="center">
 
 | Media & Now Brief Gradients | Flashlight, Health & Media Blur | Red Gradient, Dark Pill & Translucent Blur |
 | :---: | :---: | :---: |
 | <img src="docs/screenshots/example1.png" width="260" alt="Now Media & Brief Gradient Examples" /> | <img src="docs/screenshots/example2.png" width="260" alt="Flashlight, Workout & Media Blur Examples" /> | <img src="docs/screenshots/example3.png" width="260" alt="Solid Dark Pill & Translucent Blur Examples" /> |
+
+</div>
+
+### Companion App UI (`v2.1.0`)
+
+Native One UI companion interface showing live capsule previews, interactive photo cropper, artistic style presets, and legibility scrim controls (**Tab 1**), alongside per-category toggles and live vector badges across all 10 Now Bar capsules (**Tab 2**):
+
+<div align="center">
+
+| Tab 1 — Global Finish & Image Mode | Tab 2 — Per-Category Capsule Catalog |
+| :---: | :---: |
+| <img src="docs/screenshots/Interface1.jpg" width="280" alt="Now Bar Color Companion App — Tab 1 Global Settings & Image Mode" /> | <img src="docs/screenshots/Interface2.jpg" width="280" alt="Now Bar Color Companion App — Tab 2 10-Category Capsule Catalog" /> |
 
 </div>
 
