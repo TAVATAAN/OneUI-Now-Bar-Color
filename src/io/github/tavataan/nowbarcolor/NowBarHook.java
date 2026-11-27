@@ -10,6 +10,7 @@ import android.content.pm.PackageInfo;
 import android.content.res.ColorStateList;
 import android.content.res.Resources;
 import android.database.ContentObserver;
+import android.graphics.Bitmap;
 import android.graphics.Color;
 import android.net.Uri;
 import android.os.Build;
@@ -745,19 +746,30 @@ public class NowBarHook implements IXposedHookLoadPackage {
                 @Override
                 protected void beforeHookedMethod(MethodHookParam param) {
                     if (CapsuleStyle.isApplyingInternalStyle()
-                            || (MEDIA_BACKDROP_SURFACES.isEmpty() && MEDIA_PILL_SURFACES.isEmpty())
                             || !(param.thisObject instanceof View)) {
                         return;
                     }
                     View v = (View) param.thisObject;
                     boolean isBackdrop = MEDIA_BACKDROP_SURFACES.contains(v);
                     boolean isPill = !isBackdrop && MEDIA_PILL_SURFACES.contains(v);
-                    if (!isBackdrop && !isPill) return;
+                    boolean isCustomSurface = !isBackdrop && !isPill && CapsuleStyle.isCustomBackgroundActive(v);
+                    if (!isBackdrop && !isPill && !isCustomSurface) return;
                     View card = findEnclosingNowBarCard(v);
-                    if (card == null || !shouldCustomizeCatMedia() || isCardInSettingMode(card)) {
-                        MEDIA_BACKDROP_SURFACES.remove(v);
-                        MEDIA_PILL_SURFACES.remove(v);
-                        return;
+                    if (isBackdrop || isPill) {
+                        if (card == null || !shouldCustomizeCatMedia() || isCardInSettingMode(card)) {
+                            MEDIA_BACKDROP_SURFACES.remove(v);
+                            MEDIA_PILL_SURFACES.remove(v);
+                            return;
+                        }
+                    } else {
+                        ConfigManager.Config cfg = sConfig;
+                        ConfigManager.CategoryConfig catCfg = (cfg != null && card != null)
+                                ? cfg.getCategory(resolveCategoryForCard(card)) : null;
+                        if (card == null || cfg == null || !cfg.masterEnabled
+                                || catCfg == null || !catCfg.enabled
+                                || !isCollapsedLockscreenCapsule(card)) {
+                            return;
+                        }
                     }
                     if (param.args != null && param.args.length >= 1) {
                         boolean isCsl = param.args[0] instanceof android.content.res.ColorStateList;
@@ -765,7 +777,7 @@ public class NowBarHook implements IXposedHookLoadPackage {
                             param.args[0] = isCsl
                                     ? android.content.res.ColorStateList.valueOf(Color.TRANSPARENT)
                                     : Color.TRANSPARENT;
-                        } else if (isCollapsedLockscreenCapsule(card)) {
+                        } else if (isCustomSurface || isCollapsedLockscreenCapsule(card)) {
                             param.setResult(null);
                         } else {
                             param.args[0] = isCsl
@@ -964,13 +976,7 @@ public class NowBarHook implements IXposedHookLoadPackage {
                                     ConfigManager.CategoryConfig catCfg = cfg != null ? cfg.getCategory(catId) : null;
                                     if (cfg != null && cfg.masterEnabled && catCfg != null && catCfg.enabled) {
                                         if (isCollapsedLockscreenCapsule(card)) {
-                                            float vis = getCardAodVisibility(card);
-                                            int[] grad = cfg.resolveGradientArgbForCategory(catId);
-                                            if (vis <= 0.005f || grad != null || cfg.styleMode == ConfigManager.STYLE_BLUR) {
-                                                param.setResult(Color.TRANSPARENT);
-                                            } else {
-                                                param.setResult(ConfigManager.scaleAlpha(resolveTargetArgbForCategory(catId), vis));
-                                            }
+                                            param.setResult(Color.TRANSPARENT);
                                         } else if (card.getClass().getName().endsWith("NowBarMediaCardView")
                                                 && !isCardInSettingMode(card)) {
                                             param.setResult(Color.TRANSPARENT);
@@ -1433,7 +1439,8 @@ public class NowBarHook implements IXposedHookLoadPackage {
                             ConfigManager.Config gcfg = sConfig;
                             float vis = resolveBriefVisibility(null);
                             if ((gcfg != null && gcfg.styleMode == ConfigManager.STYLE_BLUR)
-                                    || (gcfg != null && gcfg.hideBgOnAod && vis < 0.995f)) {
+                                    || (gcfg != null && gcfg.hideBgOnAod && vis < 0.995f)
+                                    || hasAnyAttachedGenUiView()) {
                                 param.setResult(Arrays.asList(Color.TRANSPARENT, Color.TRANSPARENT));
                                 return;
                             }
@@ -1853,11 +1860,8 @@ public class NowBarHook implements IXposedHookLoadPackage {
         return activeAdapter().readDarkAmountFallback(card);
     }
 
-    private static float getCardAodProgress(View card) {
-        ConfigManager.Config cfg = sConfig;
-        if (card == null || cfg == null || !cfg.masterEnabled || !cfg.hideBgOnAod) {
-            return 0.0f;
-        }
+    private static float computeRawCardAodProgress(View card) {
+        if (card == null) return 0.0f;
         float darkAmount = readCardDarkAmount(card);
         if (darkAmount < 0.0f) darkAmount = 0.0f;
         if (darkAmount > 1.0f) darkAmount = 1.0f;
@@ -1893,23 +1897,100 @@ public class NowBarHook implements IXposedHookLoadPackage {
         return elapsedMs >= 180L ? 1.0f : 0.0f;
     }
 
+    private static float getCardAodProgress(View card) {
+        ConfigManager.Config cfg = sConfig;
+        if (card == null || cfg == null || !cfg.masterEnabled || !cfg.hideBgOnAod) {
+            return 0.0f;
+        }
+        return computeRawCardAodProgress(card);
+    }
+
     private static float getCardAodVisibility(View card) {
         return Math.max(0.0f, Math.min(1.0f, 1.0f - getCardAodProgress(card)));
     }
 
+    private static float getCardEffectiveVisibility(View card, boolean isImageMode) {
+        ConfigManager.Config cfg = sConfig;
+        if (card == null || cfg == null || !cfg.masterEnabled) return 1.0f;
+        if (cfg.hideBgOnAod) {
+            return getCardAodVisibility(card);
+        }
+        if (!isImageMode) {
+            return 1.0f;
+        }
+        float raw = computeRawCardAodProgress(card);
+        return Math.max(ConfigManager.AOD_IMAGE_DIM_VISIBILITY,
+                Math.min(1.0f, 1.0f - raw * (1.0f - ConfigManager.AOD_IMAGE_DIM_VISIBILITY)));
+    }
+
+    private static final class ImageStyleSpec {
+        final Bitmap bitmap;
+        final int domColor;
+        final int scrimPercent;
+        final int scrimMode;
+        final int contrastArgb;
+
+        ImageStyleSpec(Bitmap bitmap, int domColor, int scrimPercent, int scrimMode, int contrastArgb) {
+            this.bitmap = bitmap;
+            this.domColor = domColor;
+            this.scrimPercent = scrimPercent;
+            this.scrimMode = scrimMode;
+            this.contrastArgb = contrastArgb;
+        }
+    }
+
+    private static ImageStyleSpec resolveImageStyleForCategory(
+            ConfigManager.Config cfg, String categoryId, Context ctx,
+            final View refreshTarget, final boolean isGenUiTarget) {
+        if (cfg == null || !cfg.isImageActiveForCategory(categoryId)) return null;
+        String slot = cfg.resolveImageSlotForCategory(categoryId);
+        long rev = cfg.resolveImageRevForCategory(categoryId);
+        if (slot == null || rev <= 0L) return null;
+
+        Context loadCtx = ctx != null ? ctx : sSysUiContext;
+        if (loadCtx == null && refreshTarget != null) {
+            loadCtx = refreshTarget.getContext();
+        }
+        Bitmap bmp = CapsuleImageCache.getOrLoadAsync(loadCtx, slot, rev, new Runnable() {
+            @Override
+            public void run() {
+                if (refreshTarget == null) return;
+                if (isGenUiTarget) {
+                    applyOrRestoreGenUiBlurView(refreshTarget);
+                } else {
+                    requestCardUpdate(refreshTarget);
+                }
+            }
+        });
+        return new ImageStyleSpec(
+                bmp,
+                cfg.resolveImageDomColorForCategory(categoryId),
+                cfg.resolveImageScrimPercentForCategory(categoryId),
+                cfg.resolveImageScrimModeForCategory(categoryId),
+                cfg.resolveImageContrastArgbForCategory(categoryId));
+    }
+
     private static float resolveBriefVisibility(View genUiChildView) {
+        return resolveBriefVisibility(genUiChildView, false);
+    }
+
+    private static float resolveBriefVisibility(View genUiChildView, boolean isImageMode) {
         View card = genUiChildView != null ? findEnclosingNowBarCard(genUiChildView) : null;
         if (card == null) {
             card = findCollapsedBriefCard();
         }
-        return card != null ? getCardAodVisibility(card) : 1.0f;
+        return card != null ? getCardEffectiveVisibility(card, isImageMode) : 1.0f;
     }
 
     private static void applyBorderStroke(View card, boolean useBlur, float corner, float alpha) {
+        applyBorderStroke(card, useBlur, corner, alpha, 0);
+    }
+
+    private static void applyBorderStroke(View card, boolean enableGlassBorder, float corner, float alpha, int dominantAccentRgb) {
         if (card == null) return;
         View border = activeAdapter().resolveBorderStrokeView(card);
         if (border == null) return;
-        CapsuleStyle.applyGlassBorder(border, useBlur, corner);
+        CapsuleStyle.applyGlassBorder(border, enableGlassBorder, corner, dominantAccentRgb);
         float clamped = alpha <= 0.005f ? 0.0f : (alpha >= 0.995f ? 1.0f : alpha);
         if (clamped >= 0.995f) {
             if (Boolean.TRUE.equals(XposedHelpers.getAdditionalInstanceField(card, "nb_border_faded"))) {
@@ -2103,17 +2184,20 @@ public class NowBarHook implements IXposedHookLoadPackage {
             boolean shouldCustom = shouldCustomizeCatBrief() && isBriefViewCollapsed(blurView);
             if (shouldCustom) {
                 ConfigManager.Config cfg = sConfig;
-                boolean useBlur = (cfg != null && cfg.styleMode == ConfigManager.STYLE_BLUR);
+                ImageStyleSpec imgSpec = resolveImageStyleForCategory(
+                        cfg, ConfigManager.CAT_BRIEF, blurView.getContext(), blurView, true);
+                boolean isImageMode = (imgSpec != null);
+                boolean useBlur = !isImageMode && (cfg != null && cfg.styleMode == ConfigManager.STYLE_BLUR);
                 int targetArgb = useBlur
                         ? resolveBlurTargetArgbForCategory(ConfigManager.CAT_BRIEF)
                         : resolveTargetArgbForCategory(ConfigManager.CAT_BRIEF);
-                int[] grad = cfg != null
+                int[] grad = (!isImageMode && cfg != null)
                         ? (useBlur
                             ? cfg.resolveBlurGradientArgbForCategory(ConfigManager.CAT_BRIEF)
                             : cfg.resolveGradientArgbForCategory(ConfigManager.CAT_BRIEF))
                         : null;
                 int blurRadiusPx = useBlur ? resolveConfiguredBlurRadiusPx(cfg) : 0;
-                float vis = resolveBriefVisibility(blurView);
+                float vis = resolveBriefVisibility(blurView, isImageMode);
 
                 float cornerDp = 34.0f;
                 Object baseStyle = XposedHelpers.getAdditionalInstanceField(blurView, "nb_genui_style");
@@ -2135,7 +2219,11 @@ public class NowBarHook implements IXposedHookLoadPackage {
                 View card = findEnclosingNowBarCard(blurView);
                 boolean drawBorderFg = (activeAdapter().resolveBorderStrokeView(card) == null);
                 XposedHelpers.setAdditionalInstanceField(blurView, "nb_genui_blur_applied", Boolean.TRUE);
-                setCardViewColorAndStyle(blurView, targetArgb, useBlur, blurRadiusPx, cornerPx, grad, vis, drawBorderFg);
+                if (isImageMode) {
+                    setCardViewImageAndStyle(blurView, imgSpec, cornerPx, vis, drawBorderFg);
+                } else {
+                    setCardViewColorAndStyle(blurView, targetArgb, useBlur, blurRadiusPx, cornerPx, grad, vis, drawBorderFg);
+                }
             } else {
                 Object applied = XposedHelpers.getAdditionalInstanceField(blurView, "nb_genui_blur_applied");
                 if (Boolean.TRUE.equals(applied)) {
@@ -2189,18 +2277,27 @@ public class NowBarHook implements IXposedHookLoadPackage {
         });
     }
 
-    private static boolean hasActiveGenUiBlurViewForCard(View rootCard) {
-        List<View> blurViews;
-        synchronized (ACTIVE_GENUI_BLUR_VIEWS) {
-            blurViews = new ArrayList<>(ACTIVE_GENUI_BLUR_VIEWS);
+    private static boolean hasActiveAttachedView(Set<View> trackedViews, View rootCard) {
+        List<View> snapshot;
+        synchronized (trackedViews) {
+            snapshot = new ArrayList<>(trackedViews);
         }
-        for (View bv : blurViews) {
-            if (bv == null || !bv.isAttachedToWindow()) continue;
-            if (rootCard == null || findEnclosingNowBarCard(bv) == rootCard) {
+        for (View v : snapshot) {
+            if (v == null || !v.isAttachedToWindow()) continue;
+            if (rootCard == null || findEnclosingNowBarCard(v) == rootCard) {
                 return true;
             }
         }
         return false;
+    }
+
+    private static boolean hasActiveGenUiBlurViewForCard(View rootCard) {
+        return hasActiveAttachedView(ACTIVE_GENUI_BLUR_VIEWS, rootCard);
+    }
+
+    private static boolean hasAnyAttachedGenUiView() {
+        return hasActiveAttachedView(ACTIVE_GENUI_BLUR_VIEWS, null)
+                || hasActiveAttachedView(ACTIVE_GENUI_GUIDING_VIEWS, null);
     }
 
     private static void applyOrRestoreGenUiGuidingView(View glView) {
@@ -2209,17 +2306,21 @@ public class NowBarHook implements IXposedHookLoadPackage {
             boolean shouldCustom = shouldCustomizeCatBrief() && isBriefViewCollapsed(glView);
             if (shouldCustom) {
                 ConfigManager.Config cfg = sConfig;
-                boolean useBlur = (cfg != null && cfg.styleMode == ConfigManager.STYLE_BLUR);
+                View card = findEnclosingNowBarCard(glView);
+                ImageStyleSpec imgSpec = resolveImageStyleForCategory(
+                        cfg, ConfigManager.CAT_BRIEF, glView.getContext(), card != null ? card : glView, card == null);
+                boolean isImageMode = (imgSpec != null);
+                boolean useBlur = !isImageMode && (cfg != null && cfg.styleMode == ConfigManager.STYLE_BLUR);
                 int targetArgb = useBlur
                         ? resolveBlurTargetArgbForCategory(ConfigManager.CAT_BRIEF)
                         : resolveTargetArgbForCategory(ConfigManager.CAT_BRIEF);
-                int[] grad = cfg != null
+                int[] grad = (!isImageMode && cfg != null)
                         ? (useBlur
                             ? cfg.resolveBlurGradientArgbForCategory(ConfigManager.CAT_BRIEF)
                             : cfg.resolveGradientArgbForCategory(ConfigManager.CAT_BRIEF))
                         : null;
                 int blurRadiusPx = useBlur ? resolveConfiguredBlurRadiusPx(cfg) : 0;
-                float vis = resolveBriefVisibility(glView);
+                float vis = resolveBriefVisibility(glView, isImageMode);
                 float density = glView.getContext().getResources().getDisplayMetrics().density;
                 float cornerPx = 34.0f * (density > 0f ? density : 3.0f);
 
@@ -2240,16 +2341,19 @@ public class NowBarHook implements IXposedHookLoadPackage {
 
                 // GenUIRenderer skips StyleBox.Blur when strokeStyle is "without_stroke" on GuidingLight pills,
                 // leaving GuidingLightEffectLayout (glView) as the ONLY Android View for the Now Brief capsule.
-                // Only hide glView in blur mode if a separate StyleBox.Blur sibling view is also attached to this card.
-                View card = findEnclosingNowBarCard(glView);
+                // When a separate StyleBox.Blur sibling view is attached, blurView handles all modes cleanly.
                 boolean hasBlurSibling = hasActiveGenUiBlurViewForCard(card);
-                if (useBlur && hasBlurSibling) {
+                if (hasBlurSibling) {
                     glView.setAlpha(0.0f);
                     CapsuleStyle.transparent(glView);
                 } else {
                     glView.setAlpha(1.0f);
                     boolean drawBorderFg = (activeAdapter().resolveBorderStrokeView(card) == null);
-                    setCardViewColorAndStyle(glView, targetArgb, useBlur, blurRadiusPx, cornerPx, grad, vis, drawBorderFg);
+                    if (isImageMode) {
+                        setCardViewImageAndStyle(glView, imgSpec, cornerPx, vis, drawBorderFg);
+                    } else {
+                        setCardViewColorAndStyle(glView, targetArgb, useBlur, blurRadiusPx, cornerPx, grad, vis, drawBorderFg);
+                    }
                 }
             } else {
                 Object applied = XposedHelpers.getAdditionalInstanceField(glView, "nb_genui_gl_applied");
@@ -2332,11 +2436,11 @@ public class NowBarHook implements IXposedHookLoadPackage {
 
     /**
      * Checks if the NowBar capsule is currently in its small/collapsed state on the Lockscreen
-     * (!isExpanded, cardState == 0). Keeps color pre-applied at all times (including screen-off/AOD)
+     * (!isExpanded, cardState == 0). Keeps style pre-applied at all times (including screen-off/AOD)
      * so that upon screen-on it appears instantly with 0 ms delay.
      */
     private static boolean isCollapsedLockscreenCapsule(View card) {
-        return !isCardExpanded(card) && getCardStateValue(card) == 0;
+        return card != null && !isCardExpanded(card) && getCardStateValue(card) == 0;
     }
 
     private static boolean shouldKeepExpandedMediaBackdropTransparent(View card) {
@@ -2668,29 +2772,35 @@ public class NowBarHook implements IXposedHookLoadPackage {
                 return;
             }
 
-            boolean useBlur = (cfg.styleMode == ConfigManager.STYLE_BLUR);
+            ImageStyleSpec imgSpec = resolveImageStyleForCategory(
+                    cfg, categoryId, card.getContext(), card, false);
+            boolean isImageMode = (imgSpec != null);
+            boolean useBlur = !isImageMode && (cfg.styleMode == ConfigManager.STYLE_BLUR);
             int targetArgb = useBlur
                     ? resolveBlurTargetArgbForCategory(categoryId)
                     : resolveTargetArgbForCategory(categoryId);
-            int[] grad = useBlur
-                    ? cfg.resolveBlurGradientArgbForCategory(categoryId)
-                    : cfg.resolveGradientArgbForCategory(categoryId);
+            int[] grad = !isImageMode
+                    ? (useBlur
+                        ? cfg.resolveBlurGradientArgbForCategory(categoryId)
+                        : cfg.resolveGradientArgbForCategory(categoryId))
+                    : null;
             int blurRadiusPx = useBlur ? resolveConfiguredBlurRadiusPx(cfg) : 0;
-            float vis = getCardAodVisibility(card);
+            float vis = getCardEffectiveVisibility(card, isImageMode);
             float radius = activeAdapter().resolveCardRadius(card, 100.0f);
             if (radius <= 0f) radius = 100.0f;
 
             String clsName = card.getClass().getName();
             XposedHelpers.setAdditionalInstanceField(card, "nb_custom_applied", Boolean.TRUE);
-            applyBorderStroke(card, useBlur && vis > 0.005f, radius, cfg.hideBgOnAod ? vis : 1.0f);
-            int contrastStart = (grad != null && grad.length >= 2) ? grad[0] : targetArgb;
-            int contrastEnd = (grad != null && grad.length >= 2) ? grad[1] : targetArgb;
+            int borderTint = isImageMode ? imgSpec.domColor : 0;
+            applyBorderStroke(card, (useBlur || isImageMode) && vis > 0.005f, radius, vis, borderTint);
+            int contrastStart = isImageMode ? imgSpec.contrastArgb : ((grad != null && grad.length >= 2) ? grad[0] : targetArgb);
+            int contrastEnd = isImageMode ? imgSpec.contrastArgb : ((grad != null && grad.length >= 2) ? grad[1] : targetArgb);
             applyAdaptiveContentContrast(card, contrastStart, contrastEnd, useBlur, vis);
 
             boolean aodHiddenMode = cfg.hideBgOnAod && vis <= 0.005f;
             sLastCardSummary = "cat=" + categoryId
                     + " vis=" + String.format(Locale.US, "%.2f", vis)
-                    + " blur=" + useBlur
+                    + (isImageMode ? (" img=true scrim=" + imgSpec.scrimPercent + "%") : (" blur=" + useBlur))
                     + (useBlur ? (" blurPx=" + blurRadiusPx) : "")
                     + " hideAod=" + cfg.hideBgOnAod
                     + " cls=" + card.getClass().getSimpleName();
@@ -2702,9 +2812,9 @@ public class NowBarHook implements IXposedHookLoadPackage {
 
             boolean drawBorderInFg = (activeAdapter().resolveBorderStrokeView(card) == null);
             if (clsName.endsWith("NowBarMediaCardView")) {
-                applyToMediaCard(card, targetArgb, useBlur, blurRadiusPx, radius, grad, vis, drawBorderInFg);
+                applyToMediaCard(card, imgSpec, targetArgb, useBlur, blurRadiusPx, radius, grad, vis, drawBorderInFg);
             } else {
-                applyToStandardCard(card, clsName, targetArgb, useBlur, blurRadiusPx, radius, grad, vis, drawBorderInFg);
+                applyToStandardCard(card, imgSpec, clsName, targetArgb, useBlur, blurRadiusPx, radius, grad, vis, drawBorderInFg);
             }
             captureTreeDiagnosticsIfNeeded(card, aodHiddenMode, vis);
         } catch (Throwable t) {
@@ -2715,7 +2825,7 @@ public class NowBarHook implements IXposedHookLoadPackage {
     }
 
     private static void applyToMediaCard(
-            View card, int targetArgb, boolean useBlur, int blurRadiusPx,
+            View card, ImageStyleSpec imgSpec, int targetArgb, boolean useBlur, int blurRadiusPx,
             float radius, int[] grad, float vis, boolean drawBorderInFg) {
         if (Build.VERSION.SDK_INT >= 23) {
             card.setForeground(null);
@@ -2751,19 +2861,17 @@ public class NowBarHook implements IXposedHookLoadPackage {
             if (Build.VERSION.SDK_INT >= 23 && (vis <= 0.005f || !useBlur)) {
                 mediaTarget.setForeground(null);
             }
-            setCardViewColorAndStyle(mediaTarget, targetArgb, useBlur, blurRadiusPx, radius, grad, vis, drawBorderInFg);
-            if (!useBlur && vis > 0.005f && mediaTarget.getBackground() != null
-                    && mediaTarget.getBackground().getAlpha() != 255) {
-                try {
-                    mediaTarget.getBackground().setAlpha(255);
-                } catch (Throwable ignored) {}
+            if (imgSpec != null) {
+                setCardViewImageAndStyle(mediaTarget, imgSpec, radius, vis, drawBorderInFg);
+            } else {
+                setCardViewColorAndStyle(mediaTarget, targetArgb, useBlur, blurRadiusPx, radius, grad, vis, drawBorderInFg);
             }
         }
         syncResidualAodContainers(card, vis <= 0.005f, p1, o1);
     }
 
     private static void applyToStandardCard(
-            View card, String clsName, int targetArgb, boolean useBlur, int blurRadiusPx,
+            View card, ImageStyleSpec imgSpec, String clsName, int targetArgb, boolean useBlur, int blurRadiusPx,
             float radius, int[] grad, float vis, boolean drawBorderInFg) {
         NowBarCardAdapter adapter = activeAdapter();
         View cardContainer = adapter.resolveCardContainer(card);
@@ -2783,10 +2891,18 @@ public class NowBarHook implements IXposedHookLoadPackage {
             outerGlow.setAlpha(0.0f);
         }
         if (mpsmContainer != null && (mpsmContainer.getVisibility() == View.VISIBLE || vis <= 0.005f)) {
-            setCardViewColorAndStyle(mpsmContainer, targetArgb, useBlur, blurRadiusPx, radius, grad, vis, drawBorderInFg);
+            if (imgSpec != null) {
+                setCardViewImageAndStyle(mpsmContainer, imgSpec, radius, vis, drawBorderInFg);
+            } else {
+                setCardViewColorAndStyle(mpsmContainer, targetArgb, useBlur, blurRadiusPx, radius, grad, vis, drawBorderInFg);
+            }
         }
         if (cardContainer != null) {
-            setCardViewColorAndStyle(cardContainer, targetArgb, useBlur, blurRadiusPx, radius, grad, vis, drawBorderInFg);
+            if (imgSpec != null) {
+                setCardViewImageAndStyle(cardContainer, imgSpec, radius, vis, drawBorderInFg);
+            } else {
+                setCardViewColorAndStyle(cardContainer, targetArgb, useBlur, blurRadiusPx, radius, grad, vis, drawBorderInFg);
+            }
         }
         syncResidualAodContainers(card, vis <= 0.005f, cardContainer, mpsmContainer);
 
@@ -2830,7 +2946,7 @@ public class NowBarHook implements IXposedHookLoadPackage {
                 if (vis <= 0.005f) {
                     restoreGradientIfNeeded(briefBg);
                     CapsuleStyle.transparent(briefBg);
-                } else if (useBlur && foundGenUiSurface) {
+                } else if (foundGenUiSurface) {
                     CapsuleStyle.restoreElevation(briefBg);
                     restoreGradientIfNeeded(briefBg);
                     clearBlurInfo(briefBg);
@@ -2849,7 +2965,11 @@ public class NowBarHook implements IXposedHookLoadPackage {
                             briefBg.setLayoutParams(lp);
                         }
                     } catch (Throwable ignored) {}
-                    setCardViewColorAndStyle(briefBg, targetArgb, useBlur, blurRadiusPx, radius, grad, vis, drawBorderInFg);
+                    if (imgSpec != null) {
+                        setCardViewImageAndStyle(briefBg, imgSpec, radius, vis, drawBorderInFg);
+                    } else {
+                        setCardViewColorAndStyle(briefBg, targetArgb, useBlur, blurRadiusPx, radius, grad, vis, drawBorderInFg);
+                    }
                 }
             }
         }
@@ -3036,6 +3156,24 @@ public class NowBarHook implements IXposedHookLoadPackage {
 
     private static void setCardViewColorAndStyle(View cardView, int argbColor, boolean useBlur, float radius, int[] grad) {
         setCardViewColorAndStyle(cardView, argbColor, useBlur, radius, grad, 1.0f);
+    }
+
+    private static void setCardViewImageAndStyle(
+            View view, ImageStyleSpec spec, float radius, float visibility, boolean drawBorderInForeground) {
+        if (view == null || spec == null) return;
+        if (visibility <= 0.005f) {
+            CapsuleStyle.transparent(view);
+            return;
+        }
+        CapsuleStyle.image(
+                view,
+                spec.bitmap,
+                spec.domColor,
+                radius,
+                spec.scrimPercent,
+                spec.scrimMode,
+                visibility,
+                drawBorderInForeground);
     }
 
     private static void setCardViewColorAndStyle(View cardView, int argbColor, boolean useBlur, float radius, int[] grad, float visibility) {

@@ -261,6 +261,9 @@ public class OneUIMediaCapsuleView extends View {
                 : 0;
         mStrokeColor = strokeColor;
         mIsGradient = false;
+        mIsImage = false;
+        mCapsuleImage = null;
+        mCapsuleImageShader = null;
         updateColors();
         invalidate();
     }
@@ -278,6 +281,9 @@ public class OneUIMediaCapsuleView extends View {
         mGradStart = startArgb;
         mGradEnd = endArgb;
         mIsGradient = true;
+        mIsImage = false;
+        mCapsuleImage = null;
+        mCapsuleImageShader = null;
         mIsBlur = isBlur;
         mBlurRadiusPx = isBlur
                 ? Math.max(OneUiBlurSpec.MIN_RADIUS_PX, Math.min(OneUiBlurSpec.MAX_RADIUS_PX, blurRadiusPx))
@@ -289,19 +295,58 @@ public class OneUIMediaCapsuleView extends View {
         invalidate();
     }
 
+    public void setCapsuleImage(Bitmap bmp, int domColor, int luma0to255, int scrimPercent, int scrimMode) {
+        mIsImage = true;
+        mIsGradient = false;
+        mIsBlur = false;
+        mBlurRadiusPx = 0;
+        mImageDomColor = domColor | 0xFF000000;
+        mImageLuma = Math.max(0, Math.min(255, luma0to255));
+        mImageScrimPercent = ConfigManager.clampImageScrimPercent(scrimPercent);
+        mImageScrimMode = ConfigManager.clampScrimMode(scrimMode);
+        mCapsuleColor = mImageDomColor;
+        if (mCapsuleImage != bmp) {
+            mCapsuleImage = bmp;
+            mCapsuleImageShader = (bmp != null && bmp.getWidth() > 0 && bmp.getHeight() > 0)
+                    ? new BitmapShader(bmp, Shader.TileMode.CLAMP, Shader.TileMode.CLAMP)
+                    : null;
+        }
+        mImageGeomWidth = -1f;
+        mSpecularStrokeWidthCached = -1f;
+        updateColors();
+        invalidate();
+    }
+
     private boolean mIsGradient = false;
     private int mGradStart = 0xFF1477FF;
     private int mGradEnd = 0xFF9D4EDD;
     private float mGradShaderWidth = -1f;
 
+    private boolean mIsImage = false;
+    private Bitmap mCapsuleImage = null;
+    private BitmapShader mCapsuleImageShader = null;
+    private final Matrix mCapsuleImageMatrix = new Matrix();
+    private final Paint mImagePaint = new Paint(Paint.ANTI_ALIAS_FLAG | Paint.FILTER_BITMAP_FLAG);
+    private final Paint mImageScrimPaint = new Paint(Paint.ANTI_ALIAS_FLAG);
+    private int mImageDomColor = 0xFF1E88E5;
+    private int mImageLuma = 128;
+    private int mImageScrimPercent = ConfigManager.DEFAULT_IMAGE_SCRIM;
+    private int mImageScrimMode = ConfigManager.SCRIM_UNIFORM;
+    private float mImageGeomWidth = -1f;
+
     private void updateColors() {
-        if (!mIsGradient) {
+        if (mIsImage) {
+            mBgPaint.setShader(null);
+            mBgPaint.setColor(mImageDomColor);
+            mStrokePaint.setColor(0xFFFFFFFF);
+            mSpecularStrokeWidthCached = -1f;
+        } else if (!mIsGradient) {
             mBgPaint.setShader(null);
             mBgPaint.setColor(mCapsuleColor);
         } else {
             mBgPaint.setColor(0xFFFFFFFF);
         }
-        if (mIsBlur) {
+        if (mIsBlur || mIsImage) {
             mStrokePaint.setColor(0xFFFFFFFF);
             mSpecularStrokeWidthCached = -1f;
         } else {
@@ -310,8 +355,10 @@ public class OneUIMediaCapsuleView extends View {
             mSpecularStrokeWidthCached = -1f;
         }
 
-        int effStart = mIsGradient ? mGradStart : mCapsuleColor;
-        int effEnd = mIsGradient ? mGradEnd : mCapsuleColor;
+        int effStart = mIsImage
+                ? OneUiBlurSpec.computeImageContrastArgb(mImageLuma, mImageScrimPercent, mImageScrimMode)
+                : (mIsGradient ? mGradStart : mCapsuleColor);
+        int effEnd = mIsImage ? effStart : (mIsGradient ? mGradEnd : mCapsuleColor);
         boolean darkFg = OneUiBlurSpec.needsDarkForeground(effStart, effEnd, mIsBlur);
         boolean shadowFg = !darkFg && OneUiBlurSpec.needsContrastShadow(effStart, effEnd, mIsBlur);
         int fgColor = darkFg ? OneUiBlurSpec.DARK_CONTENT_COLOR : 0xFFFFFFFF;
@@ -416,36 +463,86 @@ public class OneUIMediaCapsuleView extends View {
 
         // 2. Main Capsule Pill Body
         mCapsuleRect.set(0, 0, width, mCapsuleHeight);
-        if (mIsBlur && getParent() instanceof CapsulePreviewStage) {
-            int backdropSave = canvas.save();
-            mClipPath.reset();
-            mClipPath.addRoundRect(mCapsuleRect, radius, radius, Path.Direction.CW);
-            canvas.clipPath(mClipPath);
-            ((CapsulePreviewStage) getParent()).drawBlurredBackdrop(canvas, this, mBlurRadiusPx);
-            canvas.restoreToCount(backdropSave);
-        }
-        if (mIsGradient && mGradShaderWidth != width) {
-            mGradShaderWidth = width;
-            mBgPaint.setShader(new LinearGradient(0, 0, width, 0,
-                    mGradStart, mGradEnd, Shader.TileMode.CLAMP));
-        }
-        canvas.drawRoundRect(mCapsuleRect, radius, radius, mBgPaint);
-
-        if (mIsBlur) {
-            if (mGlassSheenHeight != mCapsuleHeight) {
-                mGlassSheenHeight = mCapsuleHeight;
-                mGlassSheenPaint.setShader(OneUiBlurSpec.createTopSheenShader(0f, mCapsuleHeight, 1.0f));
+        if (mIsImage) {
+            if (mImageGeomWidth != width) {
+                mImageGeomWidth = width;
+                if (mCapsuleImageShader != null && mCapsuleImage != null && mCapsuleImage.getWidth() > 0 && mCapsuleImage.getHeight() > 0) {
+                    float bw = mCapsuleImage.getWidth();
+                    float bh = mCapsuleImage.getHeight();
+                    float sc = Math.max(width / bw, mCapsuleHeight / bh);
+                    mCapsuleImageMatrix.setScale(sc, sc);
+                    mCapsuleImageMatrix.postTranslate((width - bw * sc) * 0.5f, (mCapsuleHeight - bh * sc) * 0.5f);
+                    mCapsuleImageShader.setLocalMatrix(mCapsuleImageMatrix);
+                    mImagePaint.setShader(mCapsuleImageShader);
+                } else {
+                    mImagePaint.setShader(null);
+                    mImagePaint.setColor(mImageDomColor);
+                }
+                if (mImageScrimPercent > 0) {
+                    if (mImageScrimMode == ConfigManager.SCRIM_GRADIENT) {
+                        float baseA = mImageScrimPercent / 100.0f;
+                        int aLeft = Math.min(217, Math.round(baseA * 0.50f * 255f));
+                        int aMid = Math.min(217, Math.round(baseA * 1.06f * 255f));
+                        int aRight = Math.min(217, Math.round(baseA * 0.90f * 255f));
+                        mImageScrimPaint.setShader(new LinearGradient(
+                                0f, 0f, width, 0f,
+                                new int[]{aLeft << 24, aMid << 24, aRight << 24},
+                                new float[]{0f, 0.52f, 1f},
+                                Shader.TileMode.CLAMP));
+                    } else {
+                        mImageScrimPaint.setShader(null);
+                        mImageScrimPaint.setColor(Math.min(217, Math.round((mImageScrimPercent / 100.0f) * 255f)) << 24);
+                    }
+                } else {
+                    mImageScrimPaint.setShader(null);
+                    mImageScrimPaint.setColor(0);
+                }
             }
-            canvas.drawRoundRect(mCapsuleRect, radius, radius, mGlassSheenPaint);
+            if (mCapsuleImageShader != null) {
+                mImagePaint.setShader(mCapsuleImageShader);
+            } else {
+                mImagePaint.setShader(null);
+                mImagePaint.setColor(mImageDomColor);
+            }
+            canvas.drawRoundRect(mCapsuleRect, radius, radius, mImagePaint);
+            if (mImageScrimPercent > 0) {
+                canvas.drawRoundRect(mCapsuleRect, radius, radius, mImageScrimPaint);
+            }
+        } else {
+            if (mIsBlur && getParent() instanceof CapsulePreviewStage) {
+                int backdropSave = canvas.save();
+                mClipPath.reset();
+                mClipPath.addRoundRect(mCapsuleRect, radius, radius, Path.Direction.CW);
+                canvas.clipPath(mClipPath);
+                ((CapsulePreviewStage) getParent()).drawBlurredBackdrop(canvas, this, mBlurRadiusPx);
+                canvas.restoreToCount(backdropSave);
+            }
+            if (mIsGradient && mGradShaderWidth != width) {
+                mGradShaderWidth = width;
+                mBgPaint.setShader(new LinearGradient(0, 0, width, 0,
+                        mGradStart, mGradEnd, Shader.TileMode.CLAMP));
+            }
+            canvas.drawRoundRect(mCapsuleRect, radius, radius, mBgPaint);
+
+            if (mIsBlur) {
+                if (mGlassSheenHeight != mCapsuleHeight) {
+                    mGlassSheenHeight = mCapsuleHeight;
+                    mGlassSheenPaint.setShader(OneUiBlurSpec.createTopSheenShader(0f, mCapsuleHeight, 1.0f));
+                }
+                canvas.drawRoundRect(mCapsuleRect, radius, radius, mGlassSheenPaint);
+            }
         }
 
         // 3. Subtle Inner Stroke / Specular Diagonal Glass Border (1dp)
         float halfStroke = dp(0.5f);
         mStrokeRect.set(halfStroke, halfStroke, width - halfStroke, mCapsuleHeight - halfStroke);
-        if (mIsBlur && mSpecularStrokeWidthCached != width) {
+        if ((mIsBlur || mIsImage) && mSpecularStrokeWidthCached != width) {
             mSpecularStrokeWidthCached = width;
-            mStrokePaint.setShader(OneUiBlurSpec.createSpecularBorderShader(
-                    halfStroke, halfStroke, width - halfStroke, mCapsuleHeight - halfStroke, 1.0f));
+            mStrokePaint.setShader(mIsImage
+                    ? OneUiBlurSpec.createTintedSpecularBorderShader(
+                            halfStroke, halfStroke, width - halfStroke, mCapsuleHeight - halfStroke, mImageDomColor, 1.0f)
+                    : OneUiBlurSpec.createSpecularBorderShader(
+                            halfStroke, halfStroke, width - halfStroke, mCapsuleHeight - halfStroke, 1.0f));
         }
         canvas.drawRoundRect(mStrokeRect, radius - halfStroke, radius - halfStroke, mStrokePaint);
 

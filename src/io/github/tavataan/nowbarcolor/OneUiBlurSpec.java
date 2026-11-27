@@ -123,6 +123,24 @@ final class OneUiBlurSpec {
         return maxLum >= 0.44f;
     }
 
+    static int blendRgb(int a, int b, float ratioB) {
+        float t = Math.max(0.0f, Math.min(1.0f, ratioB));
+        float inv = 1.0f - t;
+        int r = Math.round(((a >> 16) & 0xFF) * inv + ((b >> 16) & 0xFF) * t);
+        int g = Math.round(((a >> 8) & 0xFF) * inv + ((b >> 8) & 0xFF) * t);
+        int bl = Math.round((a & 0xFF) * inv + (b & 0xFF) * t);
+        return 0xFF000000 | (r << 16) | (g << 8) | bl;
+    }
+
+    static int computeImageContrastArgb(int baseLuma0to255, int scrimPercent, int scrimMode) {
+        int clampedBase = Math.max(0, Math.min(255, baseLuma0to255));
+        int clampedScrim = ConfigManager.clampImageScrimPercent(scrimPercent);
+        float scrimCover = (clampedScrim / 100.0f) * (scrimMode == ConfigManager.SCRIM_GRADIENT ? 0.88f : 1.0f);
+        float baseChan = clampedBase / 255.0f;
+        int effChan = Math.max(0, Math.min(255, Math.round(baseChan * (1.0f - scrimCover) * 255.0f)));
+        return 0xFF000000 | (effChan << 16) | (effChan << 8) | effChan;
+    }
+
     static LinearGradient createTopSheenShader(float top, float height, float visibility) {
         float clamped = Math.max(0.0f, Math.min(1.0f, visibility));
         float span = Math.max(1.0f, height * 0.55f);
@@ -138,6 +156,22 @@ final class OneUiBlurSpec {
                 ConfigManager.scaleAlpha(BORDER_START_COLOR, clamped),
                 ConfigManager.scaleAlpha(BORDER_MID_COLOR, clamped),
                 ConfigManager.scaleAlpha(BORDER_END_COLOR, clamped)
+        };
+        return new LinearGradient(left, top, right, bottom,
+                colors, new float[]{0.0f, 0.45f, 1.0f}, Shader.TileMode.CLAMP);
+    }
+
+    static LinearGradient createTintedSpecularBorderShader(
+            float left, float top, float right, float bottom, int dominantRgb, float visibility) {
+        float clamped = Math.max(0.0f, Math.min(1.0f, visibility));
+        int dom = dominantRgb | 0xFF000000;
+        int startTint = (0x66 << 24) | (blendRgb(0xFFFFFFFF, dom, 0.32f) & 0x00FFFFFF);
+        int midTint = (0x33 << 24) | (blendRgb(0xFFFFFFFF, dom, 0.52f) & 0x00FFFFFF);
+        int endTint = (0x24 << 24) | (blendRgb(0xFFFFFFFF, dom, 0.40f) & 0x00FFFFFF);
+        int[] colors = new int[]{
+                ConfigManager.scaleAlpha(startTint, clamped),
+                ConfigManager.scaleAlpha(midTint, clamped),
+                ConfigManager.scaleAlpha(endTint, clamped)
         };
         return new LinearGradient(left, top, right, bottom,
                 colors, new float[]{0.0f, 0.45f, 1.0f}, Shader.TileMode.CLAMP);

@@ -26,6 +26,30 @@ public class ConfigManager {
     public static final int MODE_FIXED_COLOR = 0;
     public static final int MODE_LOCK_WALLPAPER = 1;
     public static final int MODE_GRADIENT = 2;
+    public static final int MODE_IMAGE = 3;
+
+    public static final int IMG_STYLE_ORIGINAL = 0;
+    public static final int IMG_STYLE_BLUR = 1;
+    public static final int IMG_STYLE_DUOTONE = 2;
+    public static final int IMG_STYLE_NOIR = 3;
+    public static final int IMG_STYLE_PIXEL = 4;
+    public static final int IMG_STYLE_VIGNETTE = 5;
+    public static final int IMG_STYLE_COUNT = 6;
+
+    public static final int SCRIM_UNIFORM = 0;
+    public static final int SCRIM_GRADIENT = 1;
+
+    public static final int DUOTONE_MONET = 0;
+    public static final int DUOTONE_CYBER = 1;
+    public static final int DUOTONE_SUNSET = 2;
+    public static final int DUOTONE_OCEAN = 3;
+    public static final int DUOTONE_CRIMSON = 4;
+    public static final int DUOTONE_COUNT = 5;
+
+    public static final int DEFAULT_IMAGE_SCRIM = 40;
+    public static final int MAX_IMAGE_SCRIM = 80;
+    public static final int DEFAULT_IMAGE_BLUR = 45;
+    public static final float AOD_IMAGE_DIM_VISIBILITY = 0.45f;
 
     public static final int WALLPAPER_PRIMARY = 0;
     public static final int WALLPAPER_SECONDARY = 1;
@@ -34,6 +58,26 @@ public class ConfigManager {
 
     public static final int STYLE_SOLID = 0;
     public static final int STYLE_BLUR = 1;
+
+    public static int clampImageStyle(int v) {
+        return Math.max(0, Math.min(IMG_STYLE_COUNT - 1, v));
+    }
+
+    public static int clampImageScrimPercent(int v) {
+        return Math.max(0, Math.min(MAX_IMAGE_SCRIM, v));
+    }
+
+    public static int clampImageBlurPercent(int v) {
+        return Math.max(0, Math.min(100, v));
+    }
+
+    public static int clampScrimMode(int v) {
+        return v == SCRIM_GRADIENT ? SCRIM_GRADIENT : SCRIM_UNIFORM;
+    }
+
+    public static int clampDuotonePreset(int v) {
+        return Math.max(0, Math.min(DUOTONE_COUNT - 1, v));
+    }
 
     public static final String CAT_MEDIA = "media";
     public static final String CAT_TIMER_CLOCK = "timer_clock";
@@ -173,6 +217,14 @@ public class ConfigManager {
         public int customColorMode = MODE_FIXED_COLOR;
         public int customGradientStart = 0xFF1477FF;
         public int customGradientEnd = 0xFF9D4EDD;
+        public long customImageRev = 0L;
+        public int customImageStyle = IMG_STYLE_ORIGINAL;
+        public int customImageBlurPercent = DEFAULT_IMAGE_BLUR;
+        public int customImageScrimPercent = DEFAULT_IMAGE_SCRIM;
+        public int customImageScrimMode = SCRIM_UNIFORM;
+        public int customImageDuotonePreset = DUOTONE_MONET;
+        public int customImageDomColor = 0xFF1E88E5;
+        public int customImageLuma = 128;
 
         public CategoryConfig() {}
 
@@ -227,6 +279,14 @@ public class ConfigManager {
         public int globalColor = 0xFF1E88E5;
         public int gradientStartColor = 0xFF1477FF;
         public int gradientEndColor = 0xFF9D4EDD;
+        public long imageRev = 0L;
+        public int imageStyle = IMG_STYLE_ORIGINAL;
+        public int imageBlurPercent = DEFAULT_IMAGE_BLUR;
+        public int imageScrimPercent = DEFAULT_IMAGE_SCRIM;
+        public int imageScrimMode = SCRIM_UNIFORM;
+        public int imageDuotonePreset = DUOTONE_MONET;
+        public int imageDomColor = 0xFF1E88E5;
+        public int imageLuma = 128;
         public int cachedWallpaperPrimary = 0xFF1E88E5;
         public int cachedWallpaperSecondary = 0xFF3949AB;
         public int cachedWallpaperAccent = 0xFF00ACC1;
@@ -249,6 +309,9 @@ public class ConfigManager {
         }
 
         public int resolveGlobalBaseRgb(Integer liveWallpaperColor) {
+            if (colorMode == MODE_IMAGE) {
+                return imageDomColor | 0xFF000000;
+            }
             if (colorMode == MODE_GRADIENT) {
                 // Solid fallback (e.g. blur tint / GenUI views): midpoint of the gradient
                 return midpointRgb(gradientStartColor, gradientEndColor);
@@ -275,12 +338,80 @@ public class ConfigManager {
         public int resolveBaseRgbForCategory(String categoryId, Integer liveWallpaperColor) {
             CategoryConfig cc = getCategory(categoryId);
             if (cc.useCustomColor) {
+                if (cc.customColorMode == MODE_IMAGE) {
+                    return cc.customImageDomColor | 0xFF000000;
+                }
                 if (cc.customColorMode == MODE_GRADIENT) {
                     return midpointRgb(cc.customGradientStart, cc.customGradientEnd);
                 }
                 return cc.customColor | 0xFF000000;
             }
             return resolveGlobalBaseRgb(liveWallpaperColor);
+        }
+
+        public boolean isImageActiveForCategory(String categoryId) {
+            CategoryConfig cc = getCategory(categoryId);
+            if (cc.useCustomColor) {
+                return cc.customColorMode == MODE_IMAGE && cc.customImageRev > 0L;
+            }
+            return colorMode == MODE_IMAGE && imageRev > 0L;
+        }
+
+        public String resolveImageSlotForCategory(String categoryId) {
+            CategoryConfig cc = getCategory(categoryId);
+            if (cc.useCustomColor) {
+                return (cc.customColorMode == MODE_IMAGE && cc.customImageRev > 0L)
+                        ? ("cat_" + categoryId)
+                        : null;
+            }
+            return (colorMode == MODE_IMAGE && imageRev > 0L) ? "global" : null;
+        }
+
+        public long resolveImageRevForCategory(String categoryId) {
+            CategoryConfig cc = getCategory(categoryId);
+            if (cc.useCustomColor && cc.customColorMode == MODE_IMAGE) {
+                return cc.customImageRev;
+            }
+            return colorMode == MODE_IMAGE ? imageRev : 0L;
+        }
+
+        public int resolveImageScrimPercentForCategory(String categoryId) {
+            CategoryConfig cc = getCategory(categoryId);
+            int raw = (cc.useCustomColor && cc.customColorMode == MODE_IMAGE)
+                    ? cc.customImageScrimPercent
+                    : imageScrimPercent;
+            return clampImageScrimPercent(raw);
+        }
+
+        public int resolveImageScrimModeForCategory(String categoryId) {
+            CategoryConfig cc = getCategory(categoryId);
+            int raw = (cc.useCustomColor && cc.customColorMode == MODE_IMAGE)
+                    ? cc.customImageScrimMode
+                    : imageScrimMode;
+            return clampScrimMode(raw);
+        }
+
+        public int resolveImageDomColorForCategory(String categoryId) {
+            CategoryConfig cc = getCategory(categoryId);
+            int raw = (cc.useCustomColor && cc.customColorMode == MODE_IMAGE)
+                    ? cc.customImageDomColor
+                    : imageDomColor;
+            return raw | 0xFF000000;
+        }
+
+        public int resolveImageLumaForCategory(String categoryId) {
+            CategoryConfig cc = getCategory(categoryId);
+            int raw = (cc.useCustomColor && cc.customColorMode == MODE_IMAGE)
+                    ? cc.customImageLuma
+                    : imageLuma;
+            return Math.max(0, Math.min(255, raw));
+        }
+
+        public int resolveImageContrastArgbForCategory(String categoryId) {
+            return OneUiBlurSpec.computeImageContrastArgb(
+                    resolveImageLumaForCategory(categoryId),
+                    resolveImageScrimPercentForCategory(categoryId),
+                    resolveImageScrimModeForCategory(categoryId));
         }
 
         public int resolveGlobalFinalArgb(Integer liveWallpaperColor) {
@@ -375,6 +506,14 @@ public class ConfigManager {
                 root.put("globalColor", globalColor);
                 root.put("gradientStartColor", gradientStartColor);
                 root.put("gradientEndColor", gradientEndColor);
+                root.put("imageRev", imageRev);
+                root.put("imageStyle", imageStyle);
+                root.put("imageBlurPercent", imageBlurPercent);
+                root.put("imageScrimPercent", imageScrimPercent);
+                root.put("imageScrimMode", imageScrimMode);
+                root.put("imageDuotonePreset", imageDuotonePreset);
+                root.put("imageDomColor", imageDomColor);
+                root.put("imageLuma", imageLuma);
                 root.put("cachedWallpaperPrimary", cachedWallpaperPrimary);
                 root.put("cachedWallpaperSecondary", cachedWallpaperSecondary);
                 root.put("cachedWallpaperAccent", cachedWallpaperAccent);
@@ -392,6 +531,14 @@ public class ConfigManager {
                     cObj.put("customColorMode", cc.customColorMode);
                     cObj.put("customGradientStart", cc.customGradientStart);
                     cObj.put("customGradientEnd", cc.customGradientEnd);
+                    cObj.put("customImageRev", cc.customImageRev);
+                    cObj.put("customImageStyle", cc.customImageStyle);
+                    cObj.put("customImageBlurPercent", cc.customImageBlurPercent);
+                    cObj.put("customImageScrimPercent", cc.customImageScrimPercent);
+                    cObj.put("customImageScrimMode", cc.customImageScrimMode);
+                    cObj.put("customImageDuotonePreset", cc.customImageDuotonePreset);
+                    cObj.put("customImageDomColor", cc.customImageDomColor);
+                    cObj.put("customImageLuma", cc.customImageLuma);
                     catsObj.put(entry.getKey(), cObj);
                 }
                 root.put("categories", catsObj);
@@ -422,6 +569,14 @@ public class ConfigManager {
                 cfg.globalColor = root.optInt("globalColor", 0xFF1E88E5);
                 cfg.gradientStartColor = root.optInt("gradientStartColor", 0xFF1477FF);
                 cfg.gradientEndColor = root.optInt("gradientEndColor", 0xFF9D4EDD);
+                cfg.imageRev = Math.max(0L, root.optLong("imageRev", 0L));
+                cfg.imageStyle = clampImageStyle(root.optInt("imageStyle", IMG_STYLE_ORIGINAL));
+                cfg.imageBlurPercent = clampImageBlurPercent(root.optInt("imageBlurPercent", DEFAULT_IMAGE_BLUR));
+                cfg.imageScrimPercent = clampImageScrimPercent(root.optInt("imageScrimPercent", DEFAULT_IMAGE_SCRIM));
+                cfg.imageScrimMode = clampScrimMode(root.optInt("imageScrimMode", SCRIM_UNIFORM));
+                cfg.imageDuotonePreset = clampDuotonePreset(root.optInt("imageDuotonePreset", DUOTONE_MONET));
+                cfg.imageDomColor = root.optInt("imageDomColor", 0xFF1E88E5) | 0xFF000000;
+                cfg.imageLuma = Math.max(0, Math.min(255, root.optInt("imageLuma", 128)));
                 cfg.cachedWallpaperPrimary = root.optInt("cachedWallpaperPrimary", 0xFF1E88E5);
                 cfg.cachedWallpaperSecondary = root.optInt("cachedWallpaperSecondary", 0xFF3949AB);
                 cfg.cachedWallpaperAccent = root.optInt("cachedWallpaperAccent", 0xFF00ACC1);
@@ -441,6 +596,14 @@ public class ConfigManager {
                             cc.customColorMode = cObj.optInt("customColorMode", MODE_FIXED_COLOR);
                             cc.customGradientStart = cObj.optInt("customGradientStart", 0xFF1477FF);
                             cc.customGradientEnd = cObj.optInt("customGradientEnd", 0xFF9D4EDD);
+                            cc.customImageRev = Math.max(0L, cObj.optLong("customImageRev", 0L));
+                            cc.customImageStyle = clampImageStyle(cObj.optInt("customImageStyle", IMG_STYLE_ORIGINAL));
+                            cc.customImageBlurPercent = clampImageBlurPercent(cObj.optInt("customImageBlurPercent", DEFAULT_IMAGE_BLUR));
+                            cc.customImageScrimPercent = clampImageScrimPercent(cObj.optInt("customImageScrimPercent", DEFAULT_IMAGE_SCRIM));
+                            cc.customImageScrimMode = clampScrimMode(cObj.optInt("customImageScrimMode", SCRIM_UNIFORM));
+                            cc.customImageDuotonePreset = clampDuotonePreset(cObj.optInt("customImageDuotonePreset", DUOTONE_MONET));
+                            cc.customImageDomColor = cObj.optInt("customImageDomColor", 0xFF1E88E5) | 0xFF000000;
+                            cc.customImageLuma = Math.max(0, Math.min(255, cObj.optInt("customImageLuma", 128)));
                             cfg.categories.put(meta.id, cc);
                         }
                     }

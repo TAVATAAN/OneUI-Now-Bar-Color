@@ -1,5 +1,6 @@
 package io.github.tavataan.nowbarcolor;
 
+import android.graphics.Bitmap;
 import android.graphics.Canvas;
 import android.graphics.Color;
 import android.content.res.Configuration;
@@ -29,19 +30,24 @@ final class CapsuleStyle {
         private ColorFilter colorFilter;
         private float cornerRadius;
         private float strokeWidthPx;
+        private int accentRgb = 0;
         private int alpha = 255;
         private int cachedW = -1;
         private int cachedH = -1;
+        private int cachedAccent = 0;
 
         SpecularBorderDrawable() {}
 
-        void configure(float corner, float strokePx) {
+        void configure(float corner, float strokePx, int dominantAccentRgb) {
             float resolvedStroke = strokePx > 0.0f ? strokePx : 3.0f;
-            if (Math.abs(cornerRadius - corner) < 0.05f && Math.abs(strokeWidthPx - resolvedStroke) < 0.05f) {
+            if (Math.abs(cornerRadius - corner) < 0.05f
+                    && Math.abs(strokeWidthPx - resolvedStroke) < 0.05f
+                    && accentRgb == dominantAccentRgb) {
                 return;
             }
             cornerRadius = corner;
             strokeWidthPx = resolvedStroke;
+            accentRgb = dominantAccentRgb;
             cachedW = -1;
             invalidateSelf();
         }
@@ -59,11 +65,14 @@ final class CapsuleStyle {
             if (strokeRect == null) {
                 strokeRect = new RectF();
             }
-            if (cachedW != w || cachedH != h) {
+            if (cachedW != w || cachedH != h || cachedAccent != accentRgb) {
                 cachedW = w;
                 cachedH = h;
+                cachedAccent = accentRgb;
                 paint.setStrokeWidth(strokeWidthPx);
-                paint.setShader(OneUiBlurSpec.createSpecularBorderShader(b.left, b.top, b.right, b.bottom, 1.0f));
+                paint.setShader(accentRgb != 0
+                        ? OneUiBlurSpec.createTintedSpecularBorderShader(b.left, b.top, b.right, b.bottom, accentRgb, 1.0f)
+                        : OneUiBlurSpec.createSpecularBorderShader(b.left, b.top, b.right, b.bottom, 1.0f));
             }
             paint.setColorFilter(colorFilter);
             paint.setAlpha(alpha);
@@ -102,14 +111,19 @@ final class CapsuleStyle {
 
     private static final class State {
         CapsuleGradient gradient;
+        CapsuleImageDrawable image;
         android.content.res.ColorStateList originalTint;
         GradientDrawable solid;
         Drawable original;
         Drawable originalForeground;
         Drawable alphaHiddenDrawable;
+        boolean solidApplied;
         boolean gradientApplied;
+        boolean imageApplied;
         boolean foregroundApplied;
         boolean originalClip;
+        int solidColor;
+        float solidRadius = -1f;
         Object blur;
         int blurRadiusPx;
         float blurRadius;
@@ -122,6 +136,16 @@ final class CapsuleStyle {
         float originalElevation;
         boolean hasCardElevation;
         float originalCardElevation;
+    }
+
+    private static boolean hasCustomBackground(State state) {
+        return state != null && (state.solidApplied || state.gradientApplied || state.imageApplied);
+    }
+
+    static boolean isCustomBackgroundActive(View view) {
+        if (view == null) return false;
+        State state = (State) XposedHelpers.getAdditionalInstanceField(view, "nb_style");
+        return hasCustomBackground(state);
     }
 
     private static State state(View view) {
@@ -146,6 +170,10 @@ final class CapsuleStyle {
     }
 
     static void applyGlassBorder(View borderView, boolean enableGlassBorder, float corner) {
+        applyGlassBorder(borderView, enableGlassBorder, corner, 0);
+    }
+
+    static void applyGlassBorder(View borderView, boolean enableGlassBorder, float corner, int dominantAccentRgb) {
         if (borderView == null) return;
         Object savedFlag = XposedHelpers.getAdditionalInstanceField(borderView, "nb_border_saved");
         if (enableGlassBorder) {
@@ -161,7 +189,7 @@ final class CapsuleStyle {
                 drawable = new SpecularBorderDrawable();
                 XposedHelpers.setAdditionalInstanceField(borderView, "nb_glass_border", drawable);
             }
-            drawable.configure(radius(corner), strokeWidthPx(borderView));
+            drawable.configure(radius(corner), strokeWidthPx(borderView), dominantAccentRgb);
             if (borderView.getBackground() != drawable) {
                 borderView.setBackground(drawable);
             }
@@ -269,7 +297,7 @@ final class CapsuleStyle {
         State state = (State) XposedHelpers.getAdditionalInstanceField(view, "nb_style");
         if (state != null && state.foregroundApplied) {
             view.setForeground(state.originalForeground);
-            if (!state.gradientApplied) view.setClipToOutline(state.originalClip);
+            if (!hasCustomBackground(state)) view.setClipToOutline(state.originalClip);
             state.foregroundApplied = false;
             state.originalForeground = null;
         }
@@ -278,13 +306,17 @@ final class CapsuleStyle {
     private static void releaseBackgroundGradient(View view) {
         if (view == null) return;
         State state = (State) XposedHelpers.getAdditionalInstanceField(view, "nb_style");
-        if (state == null || !state.gradientApplied) return;
+        if (!hasCustomBackground(state)) return;
         view.setBackground(state.original);
         if (!state.foregroundApplied) view.setClipToOutline(state.originalClip);
         if (view.getBackgroundTintList() != state.originalTint) {
             view.setBackgroundTintList(state.originalTint);
         }
+        state.solidApplied = false;
         state.gradientApplied = false;
+        state.imageApplied = false;
+        state.solidColor = 0;
+        state.solidRadius = -1f;
         state.original = null;
         state.originalTint = null;
     }
@@ -296,7 +328,7 @@ final class CapsuleStyle {
         State state = state(view);
         if (!state.foregroundApplied) {
             state.originalForeground = view.getForeground();
-            if (!state.gradientApplied) state.originalClip = view.getClipToOutline();
+            if (!hasCustomBackground(state)) state.originalClip = view.getClipToOutline();
             state.foregroundApplied = true;
         }
         if (state.gradient == null) state.gradient = new CapsuleGradient();
@@ -316,19 +348,26 @@ final class CapsuleStyle {
         state.alphaHiddenDrawable = null;
     }
 
-    static void gradient(View view, int start, int end, float corner) {
-        if (view == null) return;
-        restoreForeground(view);
-        State state = state(view);
-        restoreHiddenAlpha(state);
-        if (!state.gradientApplied) {
+    private static void captureOriginalBackgroundOnce(View view, State state) {
+        if (!hasCustomBackground(state)) {
             state.original = view.getBackground();
             state.originalClip = view.getClipToOutline();
             state.originalTint = view.getBackgroundTintList();
             // Make the native CardView backing drawable transparent once, not every frame.
             setNativeColor(view, Color.TRANSPARENT);
-            state.gradientApplied = true;
         }
+    }
+
+    static void gradient(View view, int start, int end, float corner) {
+        if (view == null) return;
+        clearBlur(view);
+        restoreForeground(view);
+        State state = state(view);
+        restoreHiddenAlpha(state);
+        captureOriginalBackgroundOnce(view, state);
+        state.solidApplied = false;
+        state.gradientApplied = true;
+        state.imageApplied = false;
         if (state.gradient == null) state.gradient = new CapsuleGradient();
         CapsuleGradient drawable = state.gradient;
         // A native tint can otherwise make newly attached drawables transparent too.
@@ -340,11 +379,58 @@ final class CapsuleStyle {
         if (!view.getClipToOutline()) view.setClipToOutline(true);
     }
 
+    static void image(
+            View view, Bitmap bitmap, int domColor, float corner,
+            int scrimPercent, int scrimMode, float visibility, boolean drawBorderInForeground) {
+        if (view == null) return;
+        float vis = Math.max(0f, Math.min(1f, visibility));
+        if (vis <= 0.005f) {
+            transparent(view);
+            return;
+        }
+        clearBlur(view);
+        restoreForeground(view);
+        State state = state(view);
+        restoreHiddenAlpha(state);
+        captureOriginalBackgroundOnce(view, state);
+        state.solidApplied = false;
+        state.imageApplied = true;
+        state.gradientApplied = false;
+        if (state.image == null) state.image = new CapsuleImageDrawable();
+        CapsuleImageDrawable drawable = state.image;
+        float strokePx = drawBorderInForeground ? strokeWidthPx(view) : 0.0f;
+        if (view.getBackgroundTintList() != null) view.setBackgroundTintList(null);
+        drawable.configure(bitmap, domColor, radius(corner), scrimPercent, scrimMode,
+                drawBorderInForeground, strokePx, vis);
+        if (view.getBackground() != drawable) view.setBackground(drawable);
+        drawable.configure(bitmap, domColor, radius(corner), scrimPercent, scrimMode,
+                drawBorderInForeground, strokePx, vis);
+        if (!view.getClipToOutline()) view.setClipToOutline(true);
+        state.materialApplied = true;
+        setElevationScale(view, vis);
+    }
+
     static boolean needsGradientRepair(View view) {
         if (view == null) return false;
         // Read only: don't allocate per-view state for native/non-gradient layers.
         State state = (State) XposedHelpers.getAdditionalInstanceField(view, "nb_style");
-        if (state == null || state.gradient == null) return false;
+        if (state == null) return false;
+        if (state.solidApplied && state.solid != null) {
+            return view.getBackground() != state.solid
+                    || state.solid.getAlpha() != 255
+                    || state.solid.getColor() == null
+                    || state.solid.getColor().getDefaultColor() != state.solidColor
+                    || state.solid.getCornerRadius() != state.solidRadius
+                    || state.solid.getColorFilter() != null
+                    || !state.solid.isVisible()
+                    || view.getBackgroundTintList() != null;
+        }
+        if (state.imageApplied && state.image != null) {
+            return view.getBackground() != state.image
+                    || state.image.needsRepair()
+                    || view.getBackgroundTintList() != null;
+        }
+        if (state.gradient == null) return false;
         if (state.gradientApplied && view.getBackground() == state.gradient) {
             return state.gradient.needsRepair() || view.getBackgroundTintList() != null;
         }
@@ -386,24 +472,61 @@ final class CapsuleStyle {
         } catch (Throwable ignored) { return false; }
     }
 
+    private static void configureSolidDrawable(GradientDrawable drawable, int color, float radiusPx) {
+        if (drawable.getColors() != null || drawable.getColor() == null
+                || drawable.getColor().getDefaultColor() != color) {
+            drawable.setColor(color);
+        }
+        if (drawable.getCornerRadius() != radiusPx) {
+            drawable.setCornerRadius(radiusPx);
+        }
+        if (drawable.getAlpha() != 255) {
+            drawable.setAlpha(255);
+        }
+        if (drawable.getColorFilter() != null) {
+            drawable.clearColorFilter();
+        }
+        if (!drawable.isVisible()) {
+            drawable.setVisible(true, false);
+        }
+        drawable.setTintList(null);
+    }
+
+    /**
+     * Render solid fills using a managed GradientDrawable rather than CardView's native
+     * RoundRectDrawable so Samsung's setAlpha(255) stack/collapse calls never wipe ARGB alpha.
+     */
     static void solid(View view, int color, float corner) {
         if (view == null) return;
-        restoreGradient(view);
-        State state = state(view);
-        boolean nativeColor = setNativeColor(view, color);
-        // A CardView getter can retain its color after Samsung clears its drawable.
-        // Keep a visible fallback in that case; update it on subsequent color changes.
-        if (nativeColor && view.getBackground() != null && view.getBackground() != state.solid) return;
         if (color == Color.TRANSPARENT) {
+            clearBlur(view);
+            restoreGradient(view);
+            boolean nativeColor = setNativeColor(view, Color.TRANSPARENT);
+            State existing = (State) XposedHelpers.getAdditionalInstanceField(view, "nb_style");
+            Drawable solidDrawable = existing != null ? existing.solid : null;
+            if (nativeColor && view.getBackground() != null && view.getBackground() != solidDrawable) return;
             if (view.getBackground() != null) view.setBackground(null);
             return;
         }
+        clearBlur(view);
+        restoreForeground(view);
+        State state = state(view);
+        restoreHiddenAlpha(state);
+        state.materialApplied = false;
+        captureOriginalBackgroundOnce(view, state);
+        float r = radius(corner);
+        state.solidApplied = true;
+        state.gradientApplied = false;
+        state.imageApplied = false;
+        state.solidColor = color;
+        state.solidRadius = r;
         if (state.solid == null) state.solid = new GradientDrawable();
         GradientDrawable drawable = state.solid;
-        if (drawable.getColor() == null || drawable.getColor().getDefaultColor() != color) drawable.setColor(color);
-        float r = radius(corner);
-        if (drawable.getCornerRadius() != r) drawable.setCornerRadius(r);
+        if (view.getBackgroundTintList() != null) view.setBackgroundTintList(null);
+        configureSolidDrawable(drawable, color, r);
         if (view.getBackground() != drawable) view.setBackground(drawable);
+        // setBackground may apply the view's native drawable state; normalize afterwards.
+        configureSolidDrawable(drawable, color, r);
         if (!view.getClipToOutline()) view.setClipToOutline(true);
     }
 
@@ -504,7 +627,7 @@ final class CapsuleStyle {
     private static boolean hasCurrentBlur(View view, Object expected, State state) {
         if (expected != null && state != null) {
             Drawable bg = view.getBackground();
-            if (bg == null || bg == state.solid || bg == state.gradient) return false;
+            if (bg == null || bg == state.solid || bg == state.gradient || bg == state.image) return false;
         }
         if (BlurApi.GET == null || blurGetterFailed) return false;
         try { return BlurApi.GET.invoke(view) == expected; }
@@ -517,7 +640,7 @@ final class CapsuleStyle {
 
     private static void syncBlurDrawableAlpha(View view, State state, int blurAlpha) {
         Drawable bg = view.getBackground();
-        if (bg != null && bg != state.solid && bg != state.gradient
+        if (bg != null && bg != state.solid && bg != state.gradient && bg != state.image
                 && (state.blurDrawableRef != bg || state.blurDrawableAlpha != blurAlpha)) {
             bg.setAlpha(blurAlpha);
             state.blurDrawableRef = bg;

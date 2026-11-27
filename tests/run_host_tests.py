@@ -117,6 +117,33 @@ public class NowBarBriefCardView extends View {
   public void l0(){l0Calls++;}
   public void E(){eCalls++;}
 }''',
+'com/samsung/android/app/facewidget/presentation/NowBarBatteryCardView.java': '''package com.samsung.android.app.facewidget.presentation;
+import android.view.View;
+import android.view.ViewGroup;
+public class NowBarBatteryCardView extends ViewGroup {
+  public boolean D=true, u=false, expanded=false; public float w=0.0f; public int U=0, heightPx=600;
+  public View B=new View(), F=new View(), m1=new View(), q1=new View();
+  public android.view.ViewGroup G=new android.view.ViewGroup();
+  public int bCalls=0;
+  public NowBarBatteryCardView(){
+   registerChild("nowbar_cardview_background",B);
+   registerChild("normal_content_rootview",G);
+   registerChild("nowbar_card_border_stroke_view",F);
+   registerChild("battery_progressbar_container",m1);
+   registerChild("battery_progressbar",q1);
+   addView(B);
+  }
+  @Override public int getHeight(){return heightPx;}
+  public View getCardViewContainer(){return B;}
+  public View getBorderStrokeView(){return F;}
+  public float getNormalCardRadius(){return 48f;}
+  public boolean getLockscreenViewMode(){return D;}
+  public boolean getDozing(){return u;}
+  public float getDarkAmount(){return w;}
+  public int getCardState(){return U;}
+  public boolean isExpanded(){return expanded;}
+  public void B(){bCalls++;}
+}''',
 'android/os/Looper.java': """package android.os; import java.util.ArrayList;
 public class Looper { public final ArrayList<Runnable> queue=new ArrayList<>();
 public static final Looper MAIN=new Looper(); public static Looper getMainLooper(){return MAIN;}
@@ -132,10 +159,42 @@ public HandlerThread(String n,int p){} public void start(){} public Looper getLo
 'android/os/Bundle.java': """package android.os; public class Bundle {
 public String getString(String k,String fallback){return fallback;} }""",
 'android/content/Context.java': """package android.content; public class Context {
+private java.io.File filesDir;
+public void setFilesDir(java.io.File d){filesDir=d;} public java.io.File getFilesDir(){return filesDir;}
 public Context getApplicationContext(){return this;} public String getPackageName(){return "com.android.systemui";}
+public android.content.res.Resources getResources(){return new android.content.res.Resources();}
 public ContentResolver getContentResolver(){return new ContentResolver();} }""",
+'android/util/LruCache.java': '''package android.util;
+import java.util.*;
+public class LruCache<K,V> {
+ private final LinkedHashMap<K,V> map;
+ public LruCache(int maxSize) { map=new LinkedHashMap<>(16,0.75f,true); }
+ protected int sizeOf(K k, V v) { return 1; }
+ public synchronized V get(K k) { return map.get(k); }
+ public synchronized V put(K k, V v) { return map.put(k, v); }
+ public synchronized V remove(K k) { return map.remove(k); }
+ public synchronized Map<K,V> snapshot() { return new LinkedHashMap<>(map); }
+}''',
+'android/net/Uri.java': '''package android.net;
+import java.util.*;
+public class Uri {
+ private final String raw;
+ protected Uri(String s){this.raw=s;}
+ public static Uri parse(String s){return new Uri(s==null?"":s);}
+ public String toString(){return raw;}
+ public List<String> getPathSegments(){
+  int scheme=raw.indexOf("://");
+  String rest=scheme>=0?raw.substring(scheme+3):raw;
+  int slash=rest.indexOf('/');
+  if(slash<0)return Collections.emptyList();
+  String path=rest.substring(slash+1);
+  if(path.isEmpty())return Collections.emptyList();
+  return Arrays.asList(path.split("/"));
+ }
+}''',
 'android/content/ContentResolver.java': """package android.content; public class ContentResolver {
-public android.os.Bundle call(android.net.Uri u,String m,String a,android.os.Bundle b){return new android.os.Bundle();} }""",
+public android.os.Bundle call(android.net.Uri u,String m,String a,android.os.Bundle b){return new android.os.Bundle();}
+public android.os.ParcelFileDescriptor openFileDescriptor(android.net.Uri u,String m) throws java.io.FileNotFoundException {return null;} }""",
 'android/content/res/Configuration.java': '''package android.content.res;
 public class Configuration { public static final int UI_MODE_NIGHT_MASK=48, UI_MODE_NIGHT_YES=32; public int uiMode=16; }''',
 'android/content/res/Resources.java': '''package android.content.res;
@@ -143,10 +202,10 @@ import android.util.DisplayMetrics;
 import java.util.HashMap;
 public class Resources { public final Configuration config=new Configuration(); public final DisplayMetrics metrics=new DisplayMetrics(); {metrics.density=3.0f;}
  public Configuration getConfiguration(){return config;} public DisplayMetrics getDisplayMetrics(){return metrics;}
- private final HashMap<String,Integer> names=new HashMap<>(); private final HashMap<Integer,String> rev=new HashMap<>(); private int nextId=0x7d0a0100;
- public int registerId(String n){Integer cur=names.get(n); if(cur!=null)return cur; int id=nextId++; names.put(n,id); rev.put(id,n); return id;}
- public int getIdentifier(String n,String d,String p){Integer cur=names.get(n); return cur!=null?cur:0;}
- public String getResourceEntryName(int id){String s=rev.get(id); return s!=null?s:""; } }''',
+ private static final HashMap<String,Integer> names=new HashMap<>(); private static final HashMap<Integer,String> rev=new HashMap<>(); private static int nextId=0x7d0a0100;
+ public synchronized int registerId(String n){Integer cur=names.get(n); if(cur!=null)return cur; int id=nextId++; names.put(n,id); rev.put(id,n); return id;}
+ public synchronized int getIdentifier(String n,String d,String p){Integer cur=names.get(n); return cur!=null?cur:0;}
+ public synchronized String getResourceEntryName(int id){String s=rev.get(id); return s!=null?s:""; } }''',
 'android/provider/Settings.java': """package android.provider; public class Settings {
 public static class System { public static int reduce;
  public static String getString(android.content.ContentResolver r,String k){return "{\\\"masterEnabled\\\":false}";}
@@ -231,6 +290,55 @@ public class Rect {
  public boolean isEmpty(){return left>=right||top>=bottom;}
 }''',
 'android/graphics/ColorFilter.java': 'package android.graphics; public class ColorFilter {}',
+'android/graphics/RectF.java': '''package android.graphics;
+public class RectF {
+ public float left, top, right, bottom;
+ public RectF(){}
+ public RectF(float l,float t,float r,float b){left=l;top=t;right=r;bottom=b;}
+ public void set(Rect r){if(r!=null){left=r.left;top=r.top;right=r.right;bottom=r.bottom;}}
+ public void set(float l,float t,float r,float b){left=l;top=t;right=r;bottom=b;}
+}''',
+'android/graphics/Matrix.java': '''package android.graphics;
+public class Matrix {
+ public void setScale(float sx,float sy){}
+ public boolean postTranslate(float dx,float dy){return true;}
+}''',
+'android/graphics/Shader.java': '''package android.graphics;
+public class Shader {
+ public enum TileMode { CLAMP, REPEAT, MIRROR }
+ public void setLocalMatrix(Matrix localM){}
+}''',
+'android/graphics/LinearGradient.java': '''package android.graphics;
+public class LinearGradient extends Shader {
+ public LinearGradient(float x0,float y0,float x1,float y1,int[] colors,float[] positions,TileMode tile){}
+ public LinearGradient(float x0,float y0,float x1,float y1,int color0,int color1,TileMode tile){}
+}''',
+'android/graphics/BitmapShader.java': '''package android.graphics;
+public class BitmapShader extends Shader {
+ public BitmapShader(Bitmap bmp,TileMode tx,TileMode ty){}
+}''',
+'android/graphics/Paint.java': '''package android.graphics;
+public class Paint {
+ public static final int ANTI_ALIAS_FLAG=1, FILTER_BITMAP_FLAG=2;
+ public enum Style { FILL, STROKE, FILL_AND_STROKE }
+ private Style style=Style.FILL; private Shader shader; private int color, alpha=255; private float strokeWidth; private ColorFilter cf;
+ public Paint(){}
+ public Paint(int flags){}
+ public void setStyle(Style s){style=s;}
+ public void setStrokeWidth(float w){strokeWidth=w;}
+ public float getStrokeWidth(){return strokeWidth;}
+ public Shader setShader(Shader s){shader=s;return s;}
+ public Shader getShader(){return shader;}
+ public void setColor(int c){color=c;}
+ public int getColor(){return color;}
+ public void setAlpha(int a){alpha=a;}
+ public int getAlpha(){return alpha;}
+ public ColorFilter setColorFilter(ColorFilter f){cf=f;return f;}
+}''',
+'android/graphics/Canvas.java': '''package android.graphics;
+public class Canvas {
+ public void drawRoundRect(RectF r,float rx,float ry,Paint p){}
+}''',
 'android/graphics/drawable/Drawable.java': '''package android.graphics.drawable;
 import android.content.res.ColorStateList; import android.graphics.*;
 public class Drawable {
@@ -244,6 +352,7 @@ public class Drawable {
  public void setTintMode(PorterDuff.Mode m){} public void setTintBlendMode(BlendMode m){}
  public void setColorFilter(ColorFilter f){filter=f;} public ColorFilter getColorFilter(){return filter;}
  public void clearColorFilter(){setColorFilter(null);}
+ protected void onBoundsChange(Rect bounds){}
 }''',
 'android/graphics/drawable/GradientDrawable.java': '''package android.graphics.drawable;
 import android.content.res.ColorStateList;
@@ -397,6 +506,15 @@ public class HostTests {
   int color; int sets; boolean throwGetter; public void setCardBackgroundColor(int c){color=c;sets++;}
   public ColorStateList getCardBackgroundColor(){if(throwGetter)throw new IllegalStateException();return new ColorStateList(color);}
  }
+ public static class RoundRectDrawable extends Drawable {
+  int paintColor;
+  public void setAlpha(int a){super.setAlpha(a); paintColor=(paintColor & 0x00ffffff)|((a & 0xff)<<24);}
+ }
+ public static class RoundRectCard extends NativeCard {
+  final RoundRectDrawable nativeRoundRect=new RoundRectDrawable();
+  public RoundRectCard(){setBackground(nativeRoundRect);}
+  public void setCardBackgroundColor(int c){super.setCardBackgroundColor(c); nativeRoundRect.paintColor=c;}
+ }
  public static void main(String[] args)throws Exception{
   boolean getter=Boolean.parseBoolean(args[0]);
   Child child=new Child();
@@ -450,18 +568,24 @@ public class HostTests {
   CapsuleStyle.gradient(view,1,2,30); CapsuleStyle.solid(view,0xff654321,25);
   check(view.getBackground()==solid && ((GradientDrawable)solid).getColor().getDefaultColor()==0xff654321,"gradient to solid");
   CapsuleStyle.solid(view,0,30); check(view.getBackground()==null,"transparent clears generic background");
-  NativeCard nativeCard=new NativeCard(); CapsuleStyle.solid(nativeCard,42,30);
-  for(int i=0;i<100;i++)CapsuleStyle.solid(nativeCard,42,30);
-  check(nativeCard.sets==1,"native color setter deduplicated using live getter");
-  nativeCard.setCardBackgroundColor(99); CapsuleStyle.solid(nativeCard,42,30);
-  check(nativeCard.color==42 && nativeCard.sets==3,"native color change detected");
-  nativeCard.throwGetter=true; CapsuleStyle.solid(nativeCard,43,30);
-  check(nativeCard.color==43,"broken native getter still uses native setter");
-  nativeCard.throwGetter=false; nativeCard.setBackground(null);
-  CapsuleStyle.solid(nativeCard,43,30);
-  check(nativeCard.getBackground()!=null,"native getter matches but detached background is repaired");
-  CapsuleStyle.solid(nativeCard,44,30);
-  check(((GradientDrawable)nativeCard.getBackground()).getColor().getDefaultColor()==44,"fallback tracks later native color updates");
+  Drawable nativeOriginal=new Drawable(); NativeCard nativeCard=new NativeCard(); nativeCard.setBackground(nativeOriginal);
+  CapsuleStyle.solid(nativeCard,0x80123456,30); Drawable nativeSolid=nativeCard.getBackground();
+  int nativeWrites=nativeCard.backgrounds;
+  for(int i=0;i<100;i++)CapsuleStyle.solid(nativeCard,0x80123456,30);
+  check(nativeCard.sets==1 && nativeCard.color==0,"solid clears native CardView backing once");
+  check(nativeCard.backgrounds==nativeWrites && nativeSolid instanceof GradientDrawable && ((GradientDrawable)nativeSolid).getColor().getDefaultColor()==0x80123456,"solid GradientDrawable reused across identical calls with ARGB alpha intact");
+  nativeSolid.setAlpha(128);
+  check(CapsuleStyle.needsGradientRepair(nativeCard),"needsGradientRepair detects altered alpha on solid drawable");
+  CapsuleStyle.solid(nativeCard,0x80123456,30);
+  check(nativeSolid.getAlpha()==255,"solid alpha fade mutation repaired while preserving ARGB fill");
+  nativeCard.setBackground(null);
+  check(CapsuleStyle.needsGradientRepair(nativeCard),"needsGradientRepair detects detached solid background");
+  CapsuleStyle.solid(nativeCard,0x80123456,30);
+  check(nativeCard.getBackground()==nativeSolid,"detached solid background is repaired");
+  CapsuleStyle.solid(nativeCard,0x80445566,30);
+  check(((GradientDrawable)nativeCard.getBackground()).getColor().getDefaultColor()==0x80445566,"solid GradientDrawable tracks later color updates");
+  CapsuleStyle.restoreGradient(nativeCard);
+  check(nativeCard.getBackground()==nativeOriginal,"restoreGradient restores original native background on CardView");
   int builds=SemBlurInfo.builds;
   check(CapsuleStyle.blur(view,30,42),"blur supported"); int sets=view.blurSets;
   for(int i=0;i<100;i++)CapsuleStyle.blur(view,30,42);
@@ -722,7 +846,7 @@ public class HostTests {
   CapsuleStyle.transparent(roundRectCard);
   check(roundRectCard.sets > setsBefore && m96.getAlpha() == 0, "transparent forces setCardBackgroundColor(0) and zeroes RoundRectDrawable alpha");
   CapsuleStyle.solid(roundRectCard, 0xff1477ff, 42f);
-  check(m96.getAlpha() == 255 && roundRectCard.color == 0xff1477ff, "wake solid restores RoundRectDrawable alpha cleanly");
+  check(m96.getAlpha() == 255 && roundRectCard.color == 0 && roundRectCard.getBackground() instanceof GradientDrawable && ((GradientDrawable) roundRectCard.getBackground()).getColor().getDefaultColor() == 0xff1477ff, "wake solid restores RoundRectDrawable alpha and applies GradientDrawable cleanly");
   CapsuleStyle.transparent(roundRectCard);
   check(m96.getAlpha() == 0, "re-entering AOD zeroes RoundRectDrawable alpha again");
   CapsuleStyle.glass(roundRectCard, 0xff1477ff, 0xff1477ff, 42f);
@@ -768,7 +892,11 @@ public class HostTests {
   Object expandUpdate = constructor.newInstance(expandTestCard);
   request.invoke(expandUpdate);
   expandTestCard.getViewTreeObserver().draw();
-  check(o1Card.color == 0 && o1Card.getElevation() == 0f && p1Card.color == expectedMediaArgb, "collapsed media clears o1 black fill/elevation and colors p1");
+  check(o1Card.color == 0 && o1Card.getElevation() == 0f
+    && p1Card.getBackground() instanceof GradientDrawable
+    && ((GradientDrawable) p1Card.getBackground()).getColor().getDefaultColor() == expectedMediaArgb
+    && p1Card.getBackground().getAlpha() == 255
+    && p1Card.color == 0, "collapsed media clears o1 black fill/elevation and colors p1");
 
   Method isSettingMode = NowBarHook.class.getDeclaredMethod("isCardInSettingMode", View.class);
   isSettingMode.setAccessible(true);
@@ -797,7 +925,10 @@ public class HostTests {
   p1Card.setCardBackgroundColor(0xff000000);
   p1Card.getBackground().setAlpha(0);
   handleExpand.invoke(null, expandTestCard, Boolean.FALSE, Boolean.TRUE);
-  check(p1Card.color == expectedMediaArgb && p1Card.getBackground().getAlpha() == 255 && o1Card.color == 0, "beforeCall collapse transition repaints p1 and restores alpha synchronously");
+  check(p1Card.getBackground() instanceof GradientDrawable
+    && ((GradientDrawable) p1Card.getBackground()).getColor().getDefaultColor() == expectedMediaArgb
+    && p1Card.getBackground().getAlpha() == 255
+    && p1Card.color == 0 && o1Card.color == 0, "beforeCall collapse transition repaints p1 and restores alpha synchronously");
 
   expandTestCard.j0 = 2;
   check(Boolean.TRUE.equals(isSettingMode.invoke(null, expandTestCard)), "actual setting cardState j0=2 still triggers setting mode");
@@ -824,7 +955,7 @@ public class HostTests {
   expandTestCard.l0 = true;
   expandTestCard.j0 = 1;
   expandTestCard.getViewTreeObserver().draw();
-  check(o1Card.color == 0 && t1Card.color == 0 && t1Card.getForeground() == null && p1Card.color == 0, "wake -> expand with hideBgOnAod=true keeps o1, t1, and p1 transparent");
+  check(o1Card.color == 0 && t1Card.color == 0 && t1Card.getForeground() == null && p1Card.color == 0 && !(p1Card.getBackground() instanceof GradientDrawable), "wake -> expand with hideBgOnAod=true keeps o1, t1, and p1 transparent");
 
   Method inspectExpLeak = NowBarHook.class.getDeclaredMethod("inspectMediaExpandedLeak", View.class);
   inspectExpLeak.setAccessible(true);
@@ -1065,7 +1196,395 @@ public class HostTests {
    realCardLeak.setColor(0xff000000);
    ongoing85.B.setBackground(realCardLeak);
    check(((String) inspectLeak.invoke(null, ongoing85)).startsWith("AOD_BG_LEAK:"), "inspectAodSurfaceLeak still catches opaque nowbar_cardview_background leak");
+
+   // --- MODE_IMAGE (Custom Capsule Photos, Legibility Scrim, Contrast, Security & AOD Dim) ---
+   ConfigManager.Config rawImg = new ConfigManager.Config();
+   rawImg.colorMode = ConfigManager.MODE_IMAGE;
+   rawImg.imageRev = 8888L;
+   rawImg.imageStyle = 99;
+   rawImg.imageBlurPercent = 250;
+   rawImg.imageScrimPercent = 120;
+   rawImg.imageScrimMode = 77;
+   rawImg.imageDuotonePreset = -5;
+   rawImg.imageDomColor = 0x11FF6600;
+   rawImg.imageLuma = 310;
+   ConfigManager.Config parsedImg = ConfigManager.Config.fromJsonString(rawImg.toJsonString());
+   check(parsedImg.colorMode == ConfigManager.MODE_IMAGE && parsedImg.imageRev == 8888L, "MODE_IMAGE JSON roundtrip preserves mode and revision");
+   check(parsedImg.imageStyle == ConfigManager.clampImageStyle(99)
+     && parsedImg.imageBlurPercent == ConfigManager.clampImageBlurPercent(250)
+     && parsedImg.imageScrimPercent == ConfigManager.clampImageScrimPercent(120)
+     && parsedImg.imageScrimMode == ConfigManager.clampScrimMode(77)
+     && parsedImg.imageDuotonePreset == ConfigManager.clampDuotonePreset(-5),
+     "MODE_IMAGE JSON roundtrip clamps style, blur, scrim, mode, and duotone preset");
+   check(parsedImg.imageScrimPercent == 80 && ConfigManager.clampImageScrimPercent(-5) == 0, "image scrim clamps cleanly to 0%-80%");
+   check(parsedImg.imageDomColor == 0xFFFF6600 && parsedImg.imageLuma == 255, "MODE_IMAGE JSON preserves opaque dominant color and clamped luma");
+
+   ConfigManager.Config unbakedImg = new ConfigManager.Config();
+   unbakedImg.colorMode = ConfigManager.MODE_IMAGE;
+   unbakedImg.imageRev = 0L;
+   check(!unbakedImg.isImageActiveForCategory(ConfigManager.CAT_MEDIA) && unbakedImg.resolveImageSlotForCategory(ConfigManager.CAT_MEDIA) == null, "unbaked MODE_IMAGE (rev=0) stays inactive until image picked");
+   check(parsedImg.isImageActiveForCategory(ConfigManager.CAT_MEDIA) && "global".equals(parsedImg.resolveImageSlotForCategory(ConfigManager.CAT_MEDIA)), "active global MODE_IMAGE resolves slot 'global'");
+
+   ConfigManager.Config perCatImg = new ConfigManager.Config();
+   perCatImg.colorMode = ConfigManager.MODE_FIXED_COLOR;
+   ConfigManager.CategoryConfig mediaImgCc = perCatImg.getCategory(ConfigManager.CAT_MEDIA);
+   mediaImgCc.useCustomColor = true;
+   mediaImgCc.customColorMode = ConfigManager.MODE_IMAGE;
+   mediaImgCc.customImageRev = 999L;
+   mediaImgCc.customImageDomColor = 0xFF00AAFF;
+   mediaImgCc.customImageLuma = 240;
+   mediaImgCc.customImageScrimPercent = 80;
+   mediaImgCc.customImageScrimMode = ConfigManager.SCRIM_UNIFORM;
+   check(perCatImg.isImageActiveForCategory(ConfigManager.CAT_MEDIA) && "cat_media".equals(perCatImg.resolveImageSlotForCategory(ConfigManager.CAT_MEDIA)), "per-category MODE_IMAGE resolves cat_media slot");
+   check(!perCatImg.isImageActiveForCategory(ConfigManager.CAT_OTHER_ONGOING) && perCatImg.resolveImageSlotForCategory(ConfigManager.CAT_OTHER_ONGOING) == null, "other categories stay unaffected when only Media overrides image");
+   check(perCatImg.resolveBaseRgbForCategory(ConfigManager.CAT_MEDIA, null) == 0xFF00AAFF, "MODE_IMAGE resolves dominant color as category base RGB fallback");
+
+   int noScrimLight = OneUiBlurSpec.computeImageContrastArgb(240, 0, ConfigManager.SCRIM_UNIFORM);
+   check(noScrimLight == 0xFFF0F0F0 && OneUiBlurSpec.needsDarkForeground(noScrimLight, noScrimLight, false), "bright 0%-scrim photo triggers dark foreground contrast");
+   int heavyScrimLight = OneUiBlurSpec.computeImageContrastArgb(240, 80, ConfigManager.SCRIM_UNIFORM);
+   check(heavyScrimLight == 0xFF303030 && !OneUiBlurSpec.needsDarkForeground(heavyScrimLight, heavyScrimLight, false), "80% scrim darkens bright photo enough for crisp white foreground");
+   int gradScrimContrast = OneUiBlurSpec.computeImageContrastArgb(200, 40, ConfigManager.SCRIM_GRADIENT);
+   int uniScrimContrast = OneUiBlurSpec.computeImageContrastArgb(200, 40, ConfigManager.SCRIM_UNIFORM);
+   check((gradScrimContrast & 0xFF) > (uniScrimContrast & 0xFF), "reading gradient computes lighter average darkening factor than uniform scrim");
+   check(OneUiBlurSpec.blendRgb(0xFF000000, 0xFFFFFFFF, 0.5f) == 0xFF808080, "blendRgb mid-point blends RGB channels cleanly");
+   check(OneUiBlurSpec.createTintedSpecularBorderShader(0f, 0f, 400f, 100f, 0xFFFF5500, 1.0f) != null, "createTintedSpecularBorderShader builds gradient cleanly");
+
+   check("global".equals(CapsuleImageProcessor.sanitizeSlot("global")), "sanitizeSlot allows global");
+   check("cat_media".equals(CapsuleImageProcessor.sanitizeSlot("  CAT_media ")), "sanitizeSlot normalizes valid category slot");
+   check(CapsuleImageProcessor.sanitizeSlot("../secret") == null
+     && CapsuleImageProcessor.sanitizeSlot("cat/a") == null
+     && CapsuleImageProcessor.sanitizeSlot("cat_") == null
+     && CapsuleImageProcessor.sanitizeSlot("") == null
+     && CapsuleImageProcessor.sanitizeSlot(null) == null,
+     "sanitizeSlot rejects path traversal and invalid slots");
+   int[] cyberPair = CapsuleImageProcessor.resolveDuotoneColors(ConfigManager.DUOTONE_CYBER, 0, 0);
+   check(cyberPair != null && cyberPair.length == 2 && cyberPair[0] == 0xFF160B33 && cyberPair[1] == 0xFF00E5FF, "resolveDuotoneColors returns Cyber shadow/highlight pair");
+   int[] monetPair = CapsuleImageProcessor.resolveDuotoneColors(ConfigManager.DUOTONE_MONET, 0xFF336699, 0xFFFFAA33);
+   check(monetPair != null && monetPair.length == 2 && (monetPair[0] >>> 24) == 0xFF && (monetPair[1] >>> 24) == 0xFF && monetPair[0] != monetPair[1], "resolveDuotoneColors derives distinct opaque Monet pair");
+
+   check("content://io.github.tavataan.nowbarcolor.provider/image/global".equals(NowBarConfigProvider.buildImageUri("global").toString()), "buildImageUri builds global URI");
+   check("content://io.github.tavataan.nowbarcolor.provider/image/invalid".equals(NowBarConfigProvider.buildImageUri("../etc").toString()), "buildImageUri neutralizes unsafe slot");
+   java.io.File testRoot = new java.io.File(HostTests.class.getProtectionDomain().getCodeSource().getLocation().toURI()).getParentFile();
+   java.io.File tmpImgDir = java.nio.file.Files.createTempDirectory(testRoot.toPath(), "nb_img_host").toFile();
+   tmpImgDir.deleteOnExit();
+   android.content.Context imgProviderCtx = new android.content.Context();
+   imgProviderCtx.setFilesDir(tmpImgDir);
+   boolean badUriRejected = false;
+   try { NowBarConfigProvider.resolveSafeImageFile(imgProviderCtx, android.net.Uri.parse("content://io.github.tavataan.nowbarcolor.provider/config")); }
+   catch (java.io.FileNotFoundException expected) { badUriRejected = true; }
+   check(badUriRejected, "resolveSafeImageFile rejects non-image URI");
+   boolean traversalRejected = false;
+   try { NowBarConfigProvider.resolveSafeImageFile(imgProviderCtx, android.net.Uri.parse("content://io.github.tavataan.nowbarcolor.provider/image/..")); }
+   catch (java.io.FileNotFoundException expected) { traversalRejected = true; }
+   check(traversalRejected, "resolveSafeImageFile rejects path traversal segment");
+   java.io.File dummyBaked = CapsuleImageProcessor.getBakedImageFile(imgProviderCtx, "global");
+   dummyBaked.getParentFile().mkdirs();
+   try (java.io.FileOutputStream fos = new java.io.FileOutputStream(dummyBaked)) { fos.write(new byte[]{1, 2, 3, 4}); }
+   dummyBaked.deleteOnExit();
+   check(dummyBaked.getCanonicalPath().equals(NowBarConfigProvider.resolveSafeImageFile(imgProviderCtx, NowBarConfigProvider.buildImageUri("global")).getCanonicalPath()), "resolveSafeImageFile resolves valid baked image inside capsule_images");
+
+   View imgView = new View();
+   Drawable imgOrigBg = new Drawable();
+   imgView.setBackground(imgOrigBg);
+   CapsuleStyle.image(imgView, null, 0xFFCC4411, 48f, 40, ConfigManager.SCRIM_GRADIENT, 1.0f, true);
+   check(imgView.getBackground() instanceof CapsuleImageDrawable && !CapsuleStyle.needsGradientRepair(imgView), "CapsuleStyle.image installs healthy CapsuleImageDrawable");
+   imgView.getBackground().setAlpha(0);
+   check(CapsuleStyle.needsGradientRepair(imgView), "CapsuleImageDrawable setAlpha(0) triggers needsGradientRepair");
+   CapsuleStyle.image(imgView, null, 0xFFCC4411, 48f, 40, ConfigManager.SCRIM_GRADIENT, 1.0f, true);
+   check(!CapsuleStyle.needsGradientRepair(imgView) && imgView.getBackground().getAlpha() == 255, "CapsuleStyle.image repairs alpha back to 255");
+   imgView.getBackground().setTint(0);
+   check(CapsuleStyle.needsGradientRepair(imgView), "CapsuleImageDrawable setTint(0) triggers needsGradientRepair");
+   imgView.setBackgroundTintList(new ColorStateList(0x55000000));
+   check(CapsuleStyle.needsGradientRepair(imgView), "native View backgroundTintList triggers needsGradientRepair");
+   CapsuleStyle.image(imgView, null, 0xFFCC4411, 48f, 40, ConfigManager.SCRIM_GRADIENT, 1.0f, true);
+   check(imgView.getBackgroundTintList() == null && !CapsuleStyle.needsGradientRepair(imgView), "CapsuleStyle.image clears View backgroundTintList");
+   CapsuleStyle.restoreGradient(imgView);
+   check(imgView.getBackground() == imgOrigBg, "restoreGradient restores original background after MODE_IMAGE");
+
+   adapterField.set(null, OneUi85Adapter.INSTANCE);
+   hookMapField.set(null, hm85Rt);
+   ConfigManager.Config imgHookCfg = new ConfigManager.Config();
+   imgHookCfg.masterEnabled = true;
+   imgHookCfg.colorMode = ConfigManager.MODE_IMAGE;
+   imgHookCfg.imageRev = 555L;
+   imgHookCfg.imageDomColor = 0xFFFFEB3B;
+   imgHookCfg.imageLuma = 240;
+   imgHookCfg.imageScrimPercent = 0;
+   imgHookCfg.imageScrimMode = ConfigManager.SCRIM_UNIFORM;
+   imgHookCfg.hideBgOnAod = false;
+   imgHookCfg.getCategory(ConfigManager.CAT_OTHER_ONGOING).enabled = true;
+   imgHookCfg.getCategory(ConfigManager.CAT_MEDIA).enabled = true;
+   config.set(null, imgHookCfg);
+
+   ongoing85.B.setBackground(new Drawable());
+   Drawable imgCardBorderOrig = new Drawable();
+   ongoing85.F.setBackground(imgCardBorderOrig);
+   ongoing85.w = 0.0f;
+   XposedHelpers.setAdditionalInstanceField(ongoing85, "nb_dozing", Boolean.FALSE);
+   XposedHelpers.setAdditionalInstanceField(ongoing85, "nb_lockscreen_mode", Boolean.TRUE);
+   applyCard.invoke(null, ongoing85);
+   check(ongoing85.B.getBackground() instanceof CapsuleImageDrawable, "NowBarOngoingCardView applies CapsuleImageDrawable in MODE_IMAGE");
+   check(ongoing85.F.getBackground() != null && ongoing85.F.getBackground() != imgCardBorderOrig, "MODE_IMAGE installs tinted specular border on border stroke view");
+   check(titleTv.getTextColors().getDefaultColor() == OneUiBlurSpec.DARK_CONTENT_COLOR, "0%-scrim bright photo switches compatible card text to dark charcoal");
+
+   imgHookCfg.imageScrimPercent = 60;
+   ongoing85.w = 1.0f;
+   XposedHelpers.setAdditionalInstanceField(ongoing85, "nb_dozing", Boolean.TRUE);
+   applyCard.invoke(null, ongoing85);
+   Field cidVisField = CapsuleImageDrawable.class.getDeclaredField("visibility");
+   cidVisField.setAccessible(true);
+   check(Math.abs(cidVisField.getFloat(ongoing85.B.getBackground()) - ConfigManager.AOD_IMAGE_DIM_VISIBILITY) < 0.01f, "MODE_IMAGE dims capsule on AOD to 45% visibility for AMOLED protection when hideBgOnAod=false");
+   check(titleTv.getTextColors().getDefaultColor() == 0xFFFFFFFF, "60% scrim restores white card text contrast");
+
+   imgHookCfg.hideBgOnAod = true;
+   applyCard.invoke(null, ongoing85);
+   check(ongoing85.F.getBackground() == imgCardBorderOrig, "hideBgOnAod=true restores original border immediately on AOD");
+   check(!(ongoing85.B.getBackground() instanceof CapsuleImageDrawable) || ongoing85.B.getBackground().getAlpha() == 0, "hideBgOnAod=true removes visible image capsule on AOD");
+
+   ongoing85.w = 0.0f;
+   XposedHelpers.setAdditionalInstanceField(ongoing85, "nb_dozing", Boolean.FALSE);
+   imgHookCfg.hideBgOnAod = false;
+   applyCard.invoke(null, ongoing85);
+   check(ongoing85.F.getBackground() != null && ongoing85.F.getBackground() != imgCardBorderOrig, "waking from hideBgOnAod restores specular border");
+   imgHookCfg.getCategory(ConfigManager.CAT_OTHER_ONGOING).enabled = false;
+   applyCard.invoke(null, ongoing85);
+   check(!(ongoing85.B.getBackground() instanceof CapsuleImageDrawable) && ongoing85.F.getBackground() == imgCardBorderOrig, "disabling category restores original card background and border");
+
+   expandTestCard.l0 = false;
+   expandTestCard.j0 = 0;
+   XposedHelpers.setAdditionalInstanceField(expandTestCard, "nb_dark_amount", 0.0f);
+   XposedHelpers.setAdditionalInstanceField(expandTestCard, "nb_dozing", Boolean.FALSE);
+   XposedHelpers.setAdditionalInstanceField(expandTestCard, "nb_lockscreen_mode", Boolean.TRUE);
+   p1Card.setBackground(new Drawable());
+   applyCard.invoke(null, expandTestCard);
+   check(p1Card.getBackground() instanceof CapsuleImageDrawable && o1Card.color == 0, "NowBarMediaCardView applies CapsuleImageDrawable on p1 and keeps o1 transparent");
+   expandTestCard.l0 = true;
+   expandTestCard.j0 = 1;
+   applyCard.invoke(null, expandTestCard);
+   check(!(p1Card.getBackground() instanceof CapsuleImageDrawable) && o1Card.color == 0, "expanded MediaCardView clears MODE_IMAGE drawable cleanly");
+
+   // Regression: NowBarBatteryCardView with tall root container (> 145dp) must still customize across Solid, Blur, and Image modes
+   com.samsung.android.app.facewidget.presentation.NowBarBatteryCardView batteryCard =
+     new com.samsung.android.app.facewidget.presentation.NowBarBatteryCardView();
+   batteryCard.heightPx = 600; // 200dp at density=3.0
+   Drawable batOrigBg = new Drawable();
+   Drawable batOrigBorder = new Drawable();
+   batteryCard.B.setBackground(batOrigBg);
+   batteryCard.F.setBackground(batOrigBorder);
+   ConfigManager.Config batCfg = new ConfigManager.Config();
+   batCfg.masterEnabled = true;
+   batCfg.styleMode = ConfigManager.STYLE_SOLID;
+   batCfg.colorMode = ConfigManager.MODE_FIXED_COLOR;
+   batCfg.globalColor = 0xFF00897B;
+   batCfg.opacity = 100;
+   batCfg.getCategory(ConfigManager.CAT_BATTERY).enabled = true;
+   config.set(null, batCfg);
+   applyCard.invoke(null, batteryCard);
+   check(batteryCard.B.getBackground() instanceof GradientDrawable && ((GradientDrawable) batteryCard.B.getBackground()).getColor().getDefaultColor() == 0xFF00897B, "NowBarBatteryCardView applies Solid color even when root height exceeds 145dp");
+   check(Math.abs(batteryCard.q1.getAlpha() - 0.28f) < 0.01f, "NowBarBatteryCardView dims battery_progressbar to 28% in Solid mode");
+
+   batCfg.styleMode = ConfigManager.STYLE_BLUR;
+   batCfg.colorMode = ConfigManager.MODE_GRADIENT;
+   batCfg.gradientStartColor = 0xFF1477FF;
+   batCfg.gradientEndColor = 0xFF9D4EDD;
+   batCfg.blurIntensity = 60;
+   batCfg.blurTintOpacity = 60;
+   applyCard.invoke(null, batteryCard);
+   check(batteryCard.B.inspectBlur() != null && batteryCard.B.getForeground() instanceof GradientDrawable, "NowBarBatteryCardView applies Color Blur when root height exceeds 145dp");
+   check(batteryCard.F.getBackground() != null && batteryCard.F.getBackground() != batOrigBorder, "NowBarBatteryCardView applies specular border in Color Blur");
+
+   batCfg.colorMode = ConfigManager.MODE_IMAGE;
+   batCfg.imageRev = 777L;
+   batCfg.imageDomColor = 0xFF00BCD4;
+   batCfg.imageLuma = 110;
+   batCfg.imageScrimPercent = 40;
+   batCfg.hideBgOnAod = false;
+   applyCard.invoke(null, batteryCard);
+   check(batteryCard.B.getBackground() instanceof CapsuleImageDrawable, "NowBarBatteryCardView applies CapsuleImageDrawable in MODE_IMAGE");
+   check(Math.abs(batteryCard.q1.getAlpha() - 0.28f) < 0.01f, "NowBarBatteryCardView preserves 28% battery_progressbar alpha in MODE_IMAGE");
+
+   batteryCard.w = 1.0f;
+   batteryCard.u = true;
+   applyCard.invoke(null, batteryCard);
+   check(Math.abs(cidVisField.getFloat(batteryCard.B.getBackground()) - ConfigManager.AOD_IMAGE_DIM_VISIBILITY) < 0.01f, "NowBarBatteryCardView dims MODE_IMAGE capsule to 45% on AOD");
+   check(Math.abs(batteryCard.q1.getAlpha() - (0.28f * ConfigManager.AOD_IMAGE_DIM_VISIBILITY)) < 0.01f, "NowBarBatteryCardView scales battery_progressbar alpha cleanly on AOD image dim");
+
+   batCfg.hideBgOnAod = true;
+   applyCard.invoke(null, batteryCard);
+   check(batteryCard.q1.getAlpha() == 0.0f && !(batteryCard.B.getBackground() instanceof CapsuleImageDrawable), "NowBarBatteryCardView clears background and progress bar when hideBgOnAod=true");
+
+   batteryCard.w = 0.0f;
+   batteryCard.u = false;
+   batCfg.hideBgOnAod = false;
+   applyCard.invoke(null, batteryCard);
+   batteryCard.expanded = true;
+   applyCard.invoke(null, batteryCard);
+   check(!(batteryCard.B.getBackground() instanceof CapsuleImageDrawable) && batteryCard.F.getBackground() == batOrigBorder && batteryCard.q1.getAlpha() == 1.0f, "expanding NowBarBatteryCardView restores original background, border, and progress bar alpha");
   } finally {
+   adapterField.set(null, prevAdapter);
+   hookMapField.set(null, prevHookMap);
+   config.set(null, disabled);
+  }
+
+  // Pure Solid (<100% opacity) Regression Tests across Standard Frame-0, Media collapse, Wallpaper & GenUI
+  ConfigManager.Config solid50 = new ConfigManager.Config();
+  solid50.masterEnabled = true;
+  solid50.styleMode = ConfigManager.STYLE_SOLID;
+  solid50.colorMode = ConfigManager.MODE_FIXED_COLOR;
+  solid50.globalColor = 0xff1477ff;
+  solid50.opacity = 50;
+  solid50.getCategory(ConfigManager.CAT_OTHER_ONGOING).enabled = true;
+  solid50.getCategory(ConfigManager.CAT_MEDIA).enabled = true;
+  solid50.getCategory(ConfigManager.CAT_BRIEF).enabled = true;
+  solid50.getCategory(ConfigManager.CAT_BATTERY).enabled = true;
+  int expectedSolid50Argb = solid50.resolveFinalArgbForCategory(ConfigManager.CAT_OTHER_ONGOING, null);
+  check((expectedSolid50Argb >>> 24) == 0x80, "50% solid opacity resolves 0x80 alpha byte");
+
+  Object prevWallpaperPal = hookField("sLivePalette").get(null);
+  @SuppressWarnings("unchecked")
+  java.util.Set<View> genUiBlurSet = (java.util.Set<View>) hookField("ACTIVE_GENUI_BLUR_VIEWS").get(null);
+  @SuppressWarnings("unchecked")
+  java.util.Set<View> genUiGlSet = (java.util.Set<View>) hookField("ACTIVE_GENUI_GUIDING_VIEWS").get(null);
+  try {
+   adapterField.set(null, OneUi85Adapter.INSTANCE);
+   config.set(null, solid50);
+
+   // 1. Standard capsule frame-0 with RoundRectCard + Samsung NowBarCardStackView.y(1.0f) -> setAlpha(255)
+   com.samsung.android.app.facewidget.presentation.NowBarOngoingCardView stdOpacityCard =
+     new com.samsung.android.app.facewidget.presentation.NowBarOngoingCardView();
+   RoundRectCard stdBg = new RoundRectCard();
+   stdOpacityCard.B = stdBg;
+   stdOpacityCard.registerChild("nowbar_cardview_background", stdBg);
+   Object stdUpdate = constructor.newInstance(stdOpacityCard);
+   request.invoke(stdUpdate);
+   stdOpacityCard.getViewTreeObserver().draw(); // Frame 0
+   stdBg.getBackground().setAlpha(255); // Simulate Samsung NowBarCardStackView.y(1.0f, card)
+   check(stdBg.getBackground() instanceof GradientDrawable, "Standard Frame-0 Pure Solid replaces RoundRectDrawable with GradientDrawable");
+   check(((GradientDrawable) stdBg.getBackground()).getColor().getDefaultColor() == expectedSolid50Argb
+     && stdBg.getBackground().getAlpha() == 255
+     && (stdBg.nativeRoundRect.paintColor >>> 24) == 0,
+     "Standard Frame-0 Pure Solid preserves 50% opacity after Samsung setAlpha(255)");
+
+   // Standard Wallpaper Color at 45% opacity
+   WallpaperColorHelper.PaletteResult pal50 = new WallpaperColorHelper.PaletteResult();
+   pal50.primaryColor = 0xff22aa88;
+   hookField("sLivePalette").set(null, pal50);
+   solid50.colorMode = ConfigManager.MODE_LOCK_WALLPAPER;
+   solid50.wallpaperVariant = ConfigManager.WALLPAPER_PRIMARY;
+   solid50.opacity = 45;
+   int expectedWall45Argb = ConfigManager.scaleAlpha(0xff22aa88, 0.45f);
+   request.invoke(stdUpdate);
+   stdOpacityCard.getViewTreeObserver().draw();
+   stdBg.getBackground().setAlpha(255);
+   check(((GradientDrawable) stdBg.getBackground()).getColor().getDefaultColor() == expectedWall45Argb
+     && ((expectedWall45Argb >>> 24) == 0x73),
+     "Wallpaper Color Pure Solid at 45% opacity preserves 0x73 ARGB alpha on Frame 0");
+
+   // 2. NowBarMediaCardView at 40% opacity: Initial Frame-0 + Expand -> Animated Collapse (p8 setAlpha 0..255)
+   solid50.colorMode = ConfigManager.MODE_FIXED_COLOR;
+   solid50.globalColor = 0xff1477ff;
+   solid50.opacity = 40;
+   int expectedMedia40Argb = solid50.resolveFinalArgbForCategory(ConfigManager.CAT_MEDIA, null);
+   check((expectedMedia40Argb >>> 24) == 0x66, "40% media opacity resolves 0x66 alpha byte");
+   com.samsung.android.app.facewidget.presentation.NowBarMediaCardView mediaOpacityCard =
+     new com.samsung.android.app.facewidget.presentation.NowBarMediaCardView();
+   RoundRectCard mediaP1 = new RoundRectCard();
+   RoundRectCard mediaO1 = new RoundRectCard();
+   mediaOpacityCard.p1 = mediaP1;
+   mediaOpacityCard.o1 = mediaO1;
+   mediaOpacityCard.registerChild("stack_background_cardview", mediaP1);
+   mediaOpacityCard.registerChild("nowbar_cardview_background", mediaO1);
+   Object mediaOpacityUpd = constructor.newInstance(mediaOpacityCard);
+   request.invoke(mediaOpacityUpd);
+   mediaOpacityCard.getViewTreeObserver().draw();
+   mediaP1.getBackground().setAlpha(255); // Simulate post-bind stack alpha=1.0
+   check(mediaP1.getBackground() instanceof GradientDrawable
+     && ((GradientDrawable) mediaP1.getBackground()).getColor().getDefaultColor() == expectedMedia40Argb
+     && mediaP1.getBackground().getAlpha() == 255,
+     "Media Frame-0 Pure Solid preserves 40% opacity after post-bind setAlpha(255)");
+
+   // Expand media card -> restores RoundRectDrawable cleanly at TRANSPARENT
+   mediaOpacityCard.l0 = true;
+   mediaOpacityCard.j0 = 1;
+   mediaOpacityCard.getViewTreeObserver().draw();
+   check(mediaP1.getBackground() == mediaP1.nativeRoundRect && mediaP1.color == 0,
+     "Media expand restores native RoundRectDrawable cleanly");
+
+   // Collapse with p8 animation frames: setAlpha(0) -> draw -> setAlpha(128) -> draw -> setAlpha(255) -> draw
+   mediaOpacityCard.l0 = false;
+   mediaOpacityCard.j0 = 0;
+   handleExpand.invoke(null, mediaOpacityCard, Boolean.FALSE, Boolean.TRUE);
+   mediaP1.getBackground().setAlpha(0);
+   mediaOpacityCard.getViewTreeObserver().draw();
+   check(mediaP1.getBackground().getAlpha() == 255, "MediaLayer repairs p8 intermediate setAlpha(0) frame");
+   mediaP1.getBackground().setAlpha(128);
+   mediaOpacityCard.getViewTreeObserver().draw();
+   check(mediaP1.getBackground().getAlpha() == 255, "MediaLayer repairs p8 intermediate setAlpha(128) frame");
+   mediaP1.getBackground().setAlpha(255);
+   mediaOpacityCard.getViewTreeObserver().draw();
+   check(mediaP1.getBackground() instanceof GradientDrawable
+     && ((GradientDrawable) mediaP1.getBackground()).getColor().getDefaultColor() == expectedMedia40Argb
+     && mediaP1.getBackground().getAlpha() == 255,
+     "Media post-collapse retains exact 40% ARGB opacity after final p8 setAlpha(255)");
+
+   // 3. GenUI NowBarBriefCardView non-double-paint verification (Solid & Two-Stop Gradient at 50% opacity)
+   Method applyCardOpacity = NowBarHook.class.getDeclaredMethod("applyOrRestoreCardBackground", View.class);
+   applyCardOpacity.setAccessible(true);
+   solid50.opacity = 50;
+   int expectedBrief50Argb = solid50.resolveFinalArgbForCategory(ConfigManager.CAT_BRIEF, null);
+   com.samsung.android.app.facewidget.presentation.NowBarBriefCardView genUiBrief =
+     new com.samsung.android.app.facewidget.presentation.NowBarBriefCardView();
+   RoundRectCard genUiBriefBg = new RoundRectCard();
+   genUiBrief.briefBg = genUiBriefBg;
+   genUiBrief.registerChild("nowbar_cardview_background_for_now_brief", genUiBriefBg);
+   View genUiBlurView = new View();
+   genUiBlurView.parent = genUiBrief;
+   View genUiGlView = new View();
+   genUiGlView.parent = genUiBrief;
+   genUiBlurSet.add(genUiBlurView);
+   genUiGlSet.add(genUiGlView);
+   Method hasAnyGenUi = NowBarHook.class.getDeclaredMethod("hasAnyAttachedGenUiView");
+   hasAnyGenUi.setAccessible(true);
+   check(Boolean.TRUE.equals(hasAnyGenUi.invoke(null)), "hasAnyAttachedGenUiView detects attached GenUI overlay so Compose BaseStyle yields TRANSPARENT");
+   applyCardOpacity.invoke(null, genUiBrief);
+   String genUiDiag = " summary=" + hookField("sLastCardSummary").get(null)
+     + " glAlpha=" + genUiGlView.getAlpha() + " glBg=" + genUiGlView.getBackground()
+     + " blurBg=" + genUiBlurView.getBackground() + " briefBg=" + genUiBriefBg.getBackground();
+   check(genUiBriefBg.color == 0 && !(genUiBriefBg.getBackground() instanceof GradientDrawable),
+     "Brief briefBg stays transparent when attached GenUI overlay owns pill background:" + genUiDiag);
+   check(genUiGlView.getAlpha() == 0.0f && genUiGlView.getBackground() == null,
+     "Brief GuidingLight sibling stays hidden in Pure Solid when StyleBox.Blur sibling is attached:" + genUiDiag);
+   check(genUiBlurView.getBackground() instanceof GradientDrawable
+     && ((GradientDrawable) genUiBlurView.getBackground()).getColor().getDefaultColor() == expectedBrief50Argb
+     && genUiBlurView.getBackground().getAlpha() == 255,
+     "Brief GenUI blurView renders single clean 50% ARGB Solid layer");
+
+   solid50.colorMode = ConfigManager.MODE_GRADIENT;
+   solid50.gradientStartColor = 0xffff6600;
+   solid50.gradientEndColor = 0xff3366ff;
+   applyCardOpacity.invoke(null, genUiBrief);
+   check(genUiGlView.getAlpha() == 0.0f && genUiGlView.getBackground() == null
+     && genUiBriefBg.color == 0 && !(genUiBriefBg.getBackground() instanceof GradientDrawable),
+     "Two-Stop Gradient also avoids GenUI glView and briefBg double-paint");
+   checkGradient(genUiBlurView, ConfigManager.scaleAlpha(0xffff6600, 0.5f), ConfigManager.scaleAlpha(0xff3366ff, 0.5f),
+     "Brief GenUI blurView renders Two-Stop Gradient at 50% opacity");
+
+   // 4. NowBarBatteryCardView >145dp Pure Solid at 50% opacity remains intact
+   solid50.colorMode = ConfigManager.MODE_FIXED_COLOR;
+   solid50.globalColor = 0xff00c853;
+   solid50.opacity = 50;
+   int expectedBat50Argb = solid50.resolveFinalArgbForCategory(ConfigManager.CAT_BATTERY, null);
+   com.samsung.android.app.facewidget.presentation.NowBarBatteryCardView batteryOpacityCard =
+     new com.samsung.android.app.facewidget.presentation.NowBarBatteryCardView();
+   batteryOpacityCard.heightPx = 600;
+   applyCardOpacity.invoke(null, batteryOpacityCard);
+   check(batteryOpacityCard.B.getBackground() instanceof GradientDrawable
+     && ((GradientDrawable) batteryOpacityCard.B.getBackground()).getColor().getDefaultColor() == expectedBat50Argb,
+     "NowBarBatteryCardView preserves 50% Pure Solid styling alongside progressBar");
+  } finally {
+   genUiBlurSet.clear();
+   genUiGlSet.clear();
+   hookField("sLivePalette").set(null, prevWallpaperPal);
    adapterField.set(null, prevAdapter);
    hookMapField.set(null, prevHookMap);
    config.set(null, disabled);

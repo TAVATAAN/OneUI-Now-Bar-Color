@@ -8,8 +8,10 @@ import android.content.ClipData;
 import android.content.ClipboardManager;
 import android.content.Context;
 import android.content.DialogInterface;
+import android.content.Intent;
 import android.content.pm.PackageInfo;
 import android.os.Build;
+import android.graphics.Bitmap;
 import android.graphics.Canvas;
 import android.graphics.Color;
 import android.graphics.Insets;
@@ -22,7 +24,9 @@ import android.graphics.Shader;
 import android.graphics.Typeface;
 import android.graphics.drawable.Drawable;
 import android.graphics.drawable.GradientDrawable;
+import android.net.Uri;
 import android.os.Bundle;
+import android.provider.MediaStore;
 import android.text.Editable;
 import android.text.InputFilter;
 import android.text.TextUtils;
@@ -50,7 +54,10 @@ import android.widget.TextView;
 import android.widget.Toast;
 
 import java.util.ArrayList;
+import java.util.HashMap;
+import java.util.Iterator;
 import java.util.List;
+import java.util.Map;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.Locale;
@@ -96,9 +103,12 @@ public class MainActivity extends Activity {
     private Button mBtnFixedMode;
     private Button mBtnWallpaperMode;
     private Button mBtnGradientMode;
+    private Button mBtnImageMode;
     private LinearLayout mFixedPaletteContainer;
     private LinearLayout mWallpaperModeContainer;
     private LinearLayout mGradientModeContainer;
+    private LinearLayout mImageModeContainer;
+    private CapsuleImagePanelHelper.PanelController mGlobalImagePanel;
     private final List<View> mPaletteSwatchViews = new ArrayList<>();
     private final List<View> mGradientPaletteSwatchViews = new ArrayList<>();
     private final List<LinearLayout> mWallpaperVariantCards = new ArrayList<>();
@@ -110,6 +120,9 @@ public class MainActivity extends Activity {
     private View mDotGlobalGradEnd;
     private boolean mGlobalGradEditingEnd = false; // false = Primer color, true = Color final
 
+    private TextView mFinishCardTitle;
+    private LinearLayout mColorFinishControlsContainer;
+    private LinearLayout mImageFinishControlsContainer;
     private Button mBtnStyleSolid;
     private Button mBtnStyleBlur;
     private TextView mOpacityTitle;
@@ -121,6 +134,12 @@ public class MainActivity extends Activity {
     private TextView mBlurTintValueText;
     private boolean mUpdatingSliders = false;
     private OneUISwitch mHideBgAodSwitch;
+
+    private static final int REQ_PICK_CAPSULE_IMAGE = 7001;
+    private final Map<String, Bitmap> mUiImageBitmaps = new HashMap<>();
+    private final List<String> mUiImageLoadsInFlight = new ArrayList<>();
+    private String mPendingPickSlot;
+    private CapsuleImagePanelHelper.HostCallbacks mPendingPickCallbacks;
 
     private static final int TAB_GLOBAL = 0;
     private static final int TAB_INDIVIDUALS = 1;
@@ -347,6 +366,150 @@ public class MainActivity extends Activity {
     protected void onSaveInstanceState(Bundle outState) {
         super.onSaveInstanceState(outState);
         outState.putInt(STATE_CURRENT_TAB, mCurrentTab);
+    }
+
+    private void launchImagePicker(String slot, CapsuleImagePanelHelper.HostCallbacks cb) {
+        mPendingPickSlot = slot;
+        mPendingPickCallbacks = cb;
+        Intent pickIntent = null;
+        if (Build.VERSION.SDK_INT >= 33) {
+            pickIntent = new Intent(MediaStore.ACTION_PICK_IMAGES);
+            pickIntent.setType("image/*");
+        }
+        if (pickIntent != null) {
+            try {
+                startActivityForResult(pickIntent, REQ_PICK_CAPSULE_IMAGE);
+                return;
+            } catch (Throwable ignored) {}
+        }
+        Intent docIntent = new Intent(Intent.ACTION_OPEN_DOCUMENT);
+        docIntent.addCategory(Intent.CATEGORY_OPENABLE);
+        docIntent.setType("image/*");
+        try {
+            startActivityForResult(docIntent, REQ_PICK_CAPSULE_IMAGE);
+        } catch (Throwable ignored) {
+            Intent fallback = new Intent(Intent.ACTION_GET_CONTENT);
+            fallback.addCategory(Intent.CATEGORY_OPENABLE);
+            fallback.setType("image/*");
+            try {
+                startActivityForResult(fallback, REQ_PICK_CAPSULE_IMAGE);
+            } catch (Throwable t) {
+                Toast.makeText(this, I18n.get(this, "crop_decoding_err"), Toast.LENGTH_SHORT).show();
+            }
+        }
+    }
+
+    @Override
+    protected void onActivityResult(int requestCode, int resultCode, Intent data) {
+        super.onActivityResult(requestCode, resultCode, data);
+        if (requestCode == REQ_PICK_CAPSULE_IMAGE && resultCode == RESULT_OK
+                && data != null && data.getData() != null && mPendingPickCallbacks != null) {
+            final Uri uri = data.getData();
+            final String slot = mPendingPickSlot != null ? mPendingPickSlot : CapsuleImageProcessor.slotForGlobal();
+            final CapsuleImagePanelHelper.HostCallbacks cb = mPendingPickCallbacks;
+            CapsuleCropDialog.showForUri(
+                    this, uri, slot,
+                    cb.getStyle(), cb.getBlurPercent(), cb.getDuotonePreset(),
+                    cb.getWallPrimary(), cb.getWallAccent(),
+                    mScanExecutor,
+                    new CapsuleCropDialog.Callback() {
+                        @Override
+                        public void onBaked(CapsuleImageProcessor.BakeResult result) {
+                            cb.onBaked(result);
+                        }
+                    });
+        }
+    }
+
+    private void cacheBakedBitmapInUi(String slot, long rev, Bitmap bmp) {
+        if (slot == null || rev <= 0L || bmp == null) return;
+        String prefix = slot + "@";
+        Iterator<String> it = mUiImageBitmaps.keySet().iterator();
+        while (it.hasNext()) {
+            if (it.next().startsWith(prefix)) it.remove();
+        }
+        mUiImageBitmaps.put(prefix + rev, bmp);
+    }
+
+    private Bitmap resolveBakedBitmapForUi(final String slot, final long rev, final Runnable onLoaded) {
+        if (slot == null || rev <= 0L) return null;
+        final String key = slot + "@" + rev;
+        Bitmap cached = mUiImageBitmaps.get(key);
+        if (cached != null && !cached.isRecycled()) {
+            return cached;
+        }
+        if (mUiImageLoadsInFlight.contains(key)) {
+            return null;
+        }
+        mUiImageLoadsInFlight.add(key);
+        mScanExecutor.execute(new Runnable() {
+            @Override
+            public void run() {
+                final Bitmap loaded = CapsuleImageProcessor.loadBakedBitmap(MainActivity.this, slot);
+                runOnUiThread(new Runnable() {
+                    @Override
+                    public void run() {
+                        mUiImageLoadsInFlight.remove(key);
+                        if (loaded != null) {
+                            cacheBakedBitmapInUi(slot, rev, loaded);
+                            if (onLoaded != null) onLoaded.run();
+                        }
+                    }
+                });
+            }
+        });
+        return null;
+    }
+
+    private int activeWallpaperPrimary() {
+        return mWallpaperPalette != null ? mWallpaperPalette.primaryColor : mConfig.cachedWallpaperPrimary;
+    }
+
+    private int activeWallpaperAccent() {
+        return mWallpaperPalette != null ? mWallpaperPalette.monetAccentColor : mConfig.cachedWallpaperAccent;
+    }
+
+    private CapsuleImagePanelHelper.HostCallbacks createGlobalImageCallbacks() {
+        return new CapsuleImagePanelHelper.HostCallbacks() {
+            @Override public int getStyle() { return mConfig.imageStyle; }
+            @Override public void setStyle(int style) {
+                mConfig.imageStyle = ConfigManager.clampImageStyle(style);
+                refreshEntireUi(true);
+            }
+            @Override public int getBlurPercent() { return mConfig.imageBlurPercent; }
+            @Override public void setBlurPercent(int blurPercent) { mConfig.imageBlurPercent = ConfigManager.clampImageBlurPercent(blurPercent); }
+            @Override public int getScrimPercent() { return mConfig.imageScrimPercent; }
+            @Override public void setScrimPercent(int scrimPercent) { mConfig.imageScrimPercent = ConfigManager.clampImageScrimPercent(scrimPercent); }
+            @Override public int getScrimMode() { return mConfig.imageScrimMode; }
+            @Override public void setScrimMode(int scrimMode) { mConfig.imageScrimMode = ConfigManager.clampScrimMode(scrimMode); }
+            @Override public int getDuotonePreset() { return mConfig.imageDuotonePreset; }
+            @Override public void setDuotonePreset(int preset) {
+                mConfig.imageDuotonePreset = ConfigManager.clampDuotonePreset(preset);
+                refreshEntireUi(true);
+            }
+            @Override public long getImageRev() { return mConfig.imageRev; }
+            @Override public int getWallPrimary() { return activeWallpaperPrimary(); }
+            @Override public int getWallAccent() { return activeWallpaperAccent(); }
+            @Override
+            public void onBaked(CapsuleImageProcessor.BakeResult result) {
+                if (result == null) return;
+                mConfig.colorMode = ConfigManager.MODE_IMAGE;
+                mConfig.imageDomColor = result.dominantColor;
+                mConfig.imageLuma = result.avgLuma;
+                mConfig.imageRev = result.revision;
+                cacheBakedBitmapInUi(CapsuleImageProcessor.slotForGlobal(), result.revision, result.bitmap);
+                refreshEntireUi(true);
+            }
+            @Override
+            public void onScrimChanged(boolean liveOnly) {
+                if (liveOnly) refreshPreviewOnly();
+                else refreshEntireUi(true);
+            }
+            @Override
+            public void onRequestPickPhoto() {
+                launchImagePicker(CapsuleImageProcessor.slotForGlobal(), this);
+            }
+        };
     }
 
     private void populateGlobalTab() {
@@ -876,7 +1039,7 @@ public class MainActivity extends Activity {
         secTitle.setTypeface(Typeface.DEFAULT_BOLD);
         card.addView(secTitle);
 
-        // Top side-by-side buttons: [ Paleta de Color Fijo ] | [ Fondo de Bloqueo ] | [ Degradado ]
+        // Top side-by-side buttons: [ Color ] | [ Wallpaper ] | [ Degradado ] | [ Imagen ]
         LinearLayout modeRow = new LinearLayout(this);
         modeRow.setOrientation(LinearLayout.HORIZONTAL);
         LinearLayout.LayoutParams modeRowLp = new LinearLayout.LayoutParams(
@@ -885,13 +1048,14 @@ public class MainActivity extends Activity {
         modeRowLp.bottomMargin = dp(14);
 
         boolean isCompact = isCompactScreen();
+        float tabSp = isCompact ? 10.5f : 11.5f;
 
         mBtnFixedMode = new Button(this);
         mBtnFixedMode.setAllCaps(false);
         mBtnFixedMode.setText(I18n.get(this, "tab_solid"));
-        mBtnFixedMode.setTextSize(TypedValue.COMPLEX_UNIT_SP, isCompact ? 11.5f : 12.5f);
+        mBtnFixedMode.setTextSize(TypedValue.COMPLEX_UNIT_SP, tabSp);
         mBtnFixedMode.setMinimumHeight(dp(42));
-        mBtnFixedMode.setPadding(dp(4), dp(6), dp(4), dp(6));
+        mBtnFixedMode.setPadding(dp(3), dp(6), dp(3), dp(6));
         mBtnFixedMode.setMaxLines(2);
         mBtnFixedMode.setEllipsize(TextUtils.TruncateAt.END);
         mBtnFixedMode.setOnClickListener(new View.OnClickListener() {
@@ -907,9 +1071,9 @@ public class MainActivity extends Activity {
         mBtnWallpaperMode = new Button(this);
         mBtnWallpaperMode.setAllCaps(false);
         mBtnWallpaperMode.setText(I18n.get(this, "tab_wallpaper"));
-        mBtnWallpaperMode.setTextSize(TypedValue.COMPLEX_UNIT_SP, isCompact ? 11f : 12f);
+        mBtnWallpaperMode.setTextSize(TypedValue.COMPLEX_UNIT_SP, isCompact ? 10f : 11f);
         mBtnWallpaperMode.setMinimumHeight(dp(42));
-        mBtnWallpaperMode.setPadding(dp(4), dp(6), dp(4), dp(6));
+        mBtnWallpaperMode.setPadding(dp(3), dp(6), dp(3), dp(6));
         mBtnWallpaperMode.setMaxLines(2);
         mBtnWallpaperMode.setEllipsize(TextUtils.TruncateAt.END);
         mBtnWallpaperMode.setOnClickListener(new View.OnClickListener() {
@@ -927,9 +1091,9 @@ public class MainActivity extends Activity {
         mBtnGradientMode = new Button(this);
         mBtnGradientMode.setAllCaps(false);
         mBtnGradientMode.setText(I18n.get(this, "tab_gradient"));
-        mBtnGradientMode.setTextSize(TypedValue.COMPLEX_UNIT_SP, isCompact ? 11.5f : 12.5f);
+        mBtnGradientMode.setTextSize(TypedValue.COMPLEX_UNIT_SP, tabSp);
         mBtnGradientMode.setMinimumHeight(dp(42));
-        mBtnGradientMode.setPadding(dp(4), dp(6), dp(4), dp(6));
+        mBtnGradientMode.setPadding(dp(3), dp(6), dp(3), dp(6));
         mBtnGradientMode.setMaxLines(2);
         mBtnGradientMode.setEllipsize(TextUtils.TruncateAt.END);
         mBtnGradientMode.setOnClickListener(new View.OnClickListener() {
@@ -940,11 +1104,31 @@ public class MainActivity extends Activity {
             }
         });
 
+        View spacer3 = new View(this);
+
+        mBtnImageMode = new Button(this);
+        mBtnImageMode.setAllCaps(false);
+        mBtnImageMode.setText(I18n.get(this, "tab_image"));
+        mBtnImageMode.setTextSize(TypedValue.COMPLEX_UNIT_SP, tabSp);
+        mBtnImageMode.setMinimumHeight(dp(42));
+        mBtnImageMode.setPadding(dp(3), dp(6), dp(3), dp(6));
+        mBtnImageMode.setMaxLines(2);
+        mBtnImageMode.setEllipsize(TextUtils.TruncateAt.END);
+        mBtnImageMode.setOnClickListener(new View.OnClickListener() {
+            @Override
+            public void onClick(View v) {
+                mConfig.colorMode = ConfigManager.MODE_IMAGE;
+                refreshEntireUi(true);
+            }
+        });
+
         modeRow.addView(mBtnFixedMode, new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f));
         modeRow.addView(spacer1, new LinearLayout.LayoutParams(dp(4), 1));
-        modeRow.addView(mBtnWallpaperMode, new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f));
+        modeRow.addView(mBtnWallpaperMode, new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1.1f));
         modeRow.addView(spacer2, new LinearLayout.LayoutParams(dp(4), 1));
         modeRow.addView(mBtnGradientMode, new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f));
+        modeRow.addView(spacer3, new LinearLayout.LayoutParams(dp(4), 1));
+        modeRow.addView(mBtnImageMode, new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 0.9f));
         card.addView(modeRow, modeRowLp);
 
         // Container A: Wide Fixed Color Palette Grid + Custom HSV/HEX Picker Button
@@ -1256,6 +1440,13 @@ public class MainActivity extends Activity {
         mGradientModeContainer.addView(btnGradCustomHex, gradCustomLp);
         card.addView(mGradientModeContainer);
 
+        // Container D: Global Custom Photo & Artistic Styles
+        mGlobalImagePanel = CapsuleImagePanelHelper.createController(
+                this, CapsuleImageProcessor.slotForGlobal(), mScanExecutor, createGlobalImageCallbacks());
+        mImageModeContainer = CapsuleImagePanelHelper.buildSelectorSection(this, mGlobalImagePanel);
+        mImageModeContainer.setVisibility(View.GONE);
+        card.addView(mImageModeContainer);
+
         return card;
     }
 
@@ -1263,11 +1454,15 @@ public class MainActivity extends Activity {
         LinearLayout card = createSectionCard();
 
         TextView secTitle = new TextView(this);
+        mFinishCardTitle = secTitle;
         secTitle.setText(I18n.get(this, "sec_finish_opacity"));
         secTitle.setTextColor(0xFF82B1FF);
         secTitle.setTextSize(TypedValue.COMPLEX_UNIT_SP, 11);
         secTitle.setTypeface(Typeface.DEFAULT_BOLD);
         card.addView(secTitle);
+
+        mColorFinishControlsContainer = new LinearLayout(this);
+        mColorFinishControlsContainer.setOrientation(LinearLayout.VERTICAL);
 
         LinearLayout styleRow = new LinearLayout(this);
         styleRow.setOrientation(LinearLayout.HORIZONTAL);
@@ -1315,7 +1510,7 @@ public class MainActivity extends Activity {
         styleRow.addView(mBtnStyleSolid, new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f));
         styleRow.addView(gap, new LinearLayout.LayoutParams(dp(10), 1));
         styleRow.addView(mBtnStyleBlur, new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f));
-        card.addView(styleRow, srlp);
+        mColorFinishControlsContainer.addView(styleRow, srlp);
 
         // Primary Opacity / Blur Intensity Header Row
         boolean initialBlur = (mConfig.styleMode == ConfigManager.STYLE_BLUR);
@@ -1336,7 +1531,7 @@ public class MainActivity extends Activity {
         mOpacityValueText.setTextSize(TypedValue.COMPLEX_UNIT_SP, 14.5f);
         mOpacityValueText.setTypeface(Typeface.DEFAULT_BOLD);
         opHeader.addView(mOpacityValueText);
-        card.addView(opHeader);
+        mColorFinishControlsContainer.addView(opHeader);
 
         mOpacitySeekBar = new SeekBar(this);
         mOpacitySeekBar.setMax(100);
@@ -1369,7 +1564,7 @@ public class MainActivity extends Activity {
                 refreshEntireUi(true);
             }
         });
-        card.addView(mOpacitySeekBar, sbLp);
+        mColorFinishControlsContainer.addView(mOpacitySeekBar, sbLp);
 
         // Compact Second Slider: Tint Opacity (25%..85%, default 60%) for Color Blur mode
         mBlurTintContainer = new LinearLayout(this);
@@ -1428,13 +1623,20 @@ public class MainActivity extends Activity {
             }
         });
         mBlurTintContainer.addView(mBlurTintSeekBar, tsbLp);
-        card.addView(mBlurTintContainer);
+        mColorFinishControlsContainer.addView(mBlurTintContainer);
 
         mFinishDescription = new TextView(this);
         mFinishDescription.setTextColor(0xFFB0B8C8);
         mFinishDescription.setTextSize(TypedValue.COMPLEX_UNIT_SP, 12f);
         mFinishDescription.setText(I18n.get(this, initialBlur ? "finish_blur_desc" : "finish_solid_desc"));
-        card.addView(mFinishDescription);
+        mColorFinishControlsContainer.addView(mFinishDescription);
+        card.addView(mColorFinishControlsContainer);
+
+        // Contextual Image Legibility & Glass Photo Blur controls (shown when MODE_IMAGE is selected)
+        mImageFinishControlsContainer = CapsuleImagePanelHelper.buildLegibilitySection(
+                this, mGlobalImagePanel, true);
+        mImageFinishControlsContainer.setVisibility(View.GONE);
+        card.addView(mImageFinishControlsContainer);
 
         View divider = new View(this);
         divider.setBackgroundColor(0xFF38383B);
@@ -1757,7 +1959,7 @@ public class MainActivity extends Activity {
         final Integer liveWall = WallpaperColorHelper.resolveForVariant(mWallpaperPalette, mConfig.wallpaperVariant);
         final int initialGlobalRgb = mConfig.resolveBaseRgbForCategory(meta.id, liveWall);
         final boolean[] isUsingGlobal = new boolean[]{ !cc.useCustomColor };
-        final int[] selectedMode = new int[]{ cc.useCustomColor ? cc.customColorMode : (mConfig.colorMode == ConfigManager.MODE_GRADIENT ? ConfigManager.MODE_GRADIENT : ConfigManager.MODE_FIXED_COLOR) };
+        final int[] selectedMode = new int[]{ cc.useCustomColor ? cc.customColorMode : mConfig.colorMode };
         final int[] selectedColor = new int[]{ cc.useCustomColor ? cc.customColor : initialGlobalRgb };
         final int[] gradStart = new int[]{ cc.useCustomColor ? cc.customGradientStart : mConfig.gradientStartColor };
         final int[] gradEnd = new int[]{ cc.useCustomColor ? cc.customGradientEnd : mConfig.gradientEndColor };
@@ -1770,7 +1972,21 @@ public class MainActivity extends Activity {
         final int[] selectedOpacity = new int[]{ cc.useCustomOpacity
                 ? (isBlurDialog ? OneUiBlurSpec.clampTintOpacity(cc.customOpacity) : cc.customOpacity)
                 : defaultDialogOpacity };
-        final int[] currentTab = new int[]{ cc.useCustomColor ? cc.customColorMode : (mConfig.colorMode == ConfigManager.MODE_GRADIENT ? 2 : (mConfig.colorMode == ConfigManager.MODE_LOCK_WALLPAPER ? 1 : 0)) };
+        final int[] currentTab = new int[]{ cc.useCustomColor
+                ? cc.customColorMode
+                : (mConfig.colorMode == ConfigManager.MODE_IMAGE ? 3
+                    : (mConfig.colorMode == ConfigManager.MODE_GRADIENT ? 2
+                        : (mConfig.colorMode == ConfigManager.MODE_LOCK_WALLPAPER ? 1 : 0))) };
+
+        final String catSlot = CapsuleImageProcessor.slotForCategory(meta.id);
+        final long[] catImgRev = new long[]{ cc.customImageRev };
+        final int[] catImgStyle = new int[]{ cc.customImageStyle };
+        final int[] catImgBlurPct = new int[]{ cc.customImageBlurPercent };
+        final int[] catImgScrimPct = new int[]{ cc.customImageScrimPercent };
+        final int[] catImgScrimMode = new int[]{ cc.customImageScrimMode };
+        final int[] catImgDuotone = new int[]{ cc.customImageDuotonePreset };
+        final int[] catImgDomColor = new int[]{ cc.customImageDomColor };
+        final int[] catImgLuma = new int[]{ cc.customImageLuma };
 
         final AlertDialog.Builder builder = new AlertDialog.Builder(this);
         final AlertDialog dialog = builder.create();
@@ -1877,19 +2093,20 @@ public class MainActivity extends Activity {
         card.addView(dialogStage, dStageLp);
         dialogCapsule.startWaveAnimation();
 
-        // 4. Mode Row Buttons [ Paleta Fija ] | [ Fondo Bloqueo ] | [ Degradado ]
+        // 4. Mode Row Buttons [ Color ] | [ Wallpaper ] | [ Degradado ] | [ Imagen ]
         LinearLayout modeRow = new LinearLayout(this);
         modeRow.setOrientation(LinearLayout.HORIZONTAL);
         LinearLayout.LayoutParams modeRowLp = new LinearLayout.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT);
         modeRowLp.bottomMargin = dp(12);
+        float mTabSp = isCompact ? 10f : 11f;
 
         final Button btnTabFixed = new Button(this);
         btnTabFixed.setAllCaps(false);
         btnTabFixed.setText(I18n.get(this, "tab_solid"));
-        btnTabFixed.setTextSize(TypedValue.COMPLEX_UNIT_SP, isCompact ? 11.5f : 12.5f);
+        btnTabFixed.setTextSize(TypedValue.COMPLEX_UNIT_SP, mTabSp);
         btnTabFixed.setMinimumHeight(dp(40));
-        btnTabFixed.setPadding(dp(4), dp(6), dp(4), dp(6));
+        btnTabFixed.setPadding(dp(3), dp(6), dp(3), dp(6));
         btnTabFixed.setMaxLines(2);
         btnTabFixed.setEllipsize(TextUtils.TruncateAt.END);
 
@@ -1898,9 +2115,9 @@ public class MainActivity extends Activity {
         final Button btnTabWallpaper = new Button(this);
         btnTabWallpaper.setAllCaps(false);
         btnTabWallpaper.setText(I18n.get(this, "tab_wallpaper"));
-        btnTabWallpaper.setTextSize(TypedValue.COMPLEX_UNIT_SP, isCompact ? 11f : 12f);
+        btnTabWallpaper.setTextSize(TypedValue.COMPLEX_UNIT_SP, isCompact ? 9.5f : 10.5f);
         btnTabWallpaper.setMinimumHeight(dp(40));
-        btnTabWallpaper.setPadding(dp(4), dp(6), dp(4), dp(6));
+        btnTabWallpaper.setPadding(dp(3), dp(6), dp(3), dp(6));
         btnTabWallpaper.setMaxLines(2);
         btnTabWallpaper.setEllipsize(TextUtils.TruncateAt.END);
 
@@ -1909,17 +2126,30 @@ public class MainActivity extends Activity {
         final Button btnTabGradient = new Button(this);
         btnTabGradient.setAllCaps(false);
         btnTabGradient.setText(I18n.get(this, "tab_gradient"));
-        btnTabGradient.setTextSize(TypedValue.COMPLEX_UNIT_SP, isCompact ? 11.5f : 12.5f);
+        btnTabGradient.setTextSize(TypedValue.COMPLEX_UNIT_SP, mTabSp);
         btnTabGradient.setMinimumHeight(dp(40));
-        btnTabGradient.setPadding(dp(4), dp(6), dp(4), dp(6));
+        btnTabGradient.setPadding(dp(3), dp(6), dp(3), dp(6));
         btnTabGradient.setMaxLines(2);
         btnTabGradient.setEllipsize(TextUtils.TruncateAt.END);
 
+        View tabSpacer3 = new View(this);
+
+        final Button btnTabImage = new Button(this);
+        btnTabImage.setAllCaps(false);
+        btnTabImage.setText(I18n.get(this, "tab_image"));
+        btnTabImage.setTextSize(TypedValue.COMPLEX_UNIT_SP, mTabSp);
+        btnTabImage.setMinimumHeight(dp(40));
+        btnTabImage.setPadding(dp(3), dp(6), dp(3), dp(6));
+        btnTabImage.setMaxLines(2);
+        btnTabImage.setEllipsize(TextUtils.TruncateAt.END);
+
         modeRow.addView(btnTabFixed, new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f));
         modeRow.addView(tabSpacer1, new LinearLayout.LayoutParams(dp(4), 1));
-        modeRow.addView(btnTabWallpaper, new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f));
+        modeRow.addView(btnTabWallpaper, new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1.1f));
         modeRow.addView(tabSpacer2, new LinearLayout.LayoutParams(dp(4), 1));
         modeRow.addView(btnTabGradient, new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f));
+        modeRow.addView(tabSpacer3, new LinearLayout.LayoutParams(dp(4), 1));
+        modeRow.addView(btnTabImage, new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 0.9f));
         card.addView(modeRow, modeRowLp);
 
         // 5. Container A: Fixed Palette Grid
@@ -2148,7 +2378,86 @@ public class MainActivity extends Activity {
 
         card.addView(gradContainer);
 
+        // Container D: Per-category Photo + Artistic Styles + Legibility
+        final Runnable[] updateDialogRef = new Runnable[1];
+        final CapsuleImagePanelHelper.PanelController[] catImageCtrlRef = new CapsuleImagePanelHelper.PanelController[1];
+        final CapsuleImagePanelHelper.HostCallbacks catImageCallbacks = new CapsuleImagePanelHelper.HostCallbacks() {
+            @Override public int getStyle() { return catImgStyle[0]; }
+            @Override public void setStyle(int style) {
+                isUsingGlobal[0] = false;
+                selectedMode[0] = ConfigManager.MODE_IMAGE;
+                currentTab[0] = 3;
+                catImgStyle[0] = ConfigManager.clampImageStyle(style);
+                if (updateDialogRef[0] != null) updateDialogRef[0].run();
+            }
+            @Override public int getBlurPercent() { return catImgBlurPct[0]; }
+            @Override public void setBlurPercent(int blurPercent) {
+                isUsingGlobal[0] = false;
+                selectedMode[0] = ConfigManager.MODE_IMAGE;
+                currentTab[0] = 3;
+                catImgBlurPct[0] = ConfigManager.clampImageBlurPercent(blurPercent);
+            }
+            @Override public int getScrimPercent() { return catImgScrimPct[0]; }
+            @Override public void setScrimPercent(int scrimPercent) {
+                isUsingGlobal[0] = false;
+                selectedMode[0] = ConfigManager.MODE_IMAGE;
+                currentTab[0] = 3;
+                catImgScrimPct[0] = ConfigManager.clampImageScrimPercent(scrimPercent);
+            }
+            @Override public int getScrimMode() { return catImgScrimMode[0]; }
+            @Override public void setScrimMode(int scrimMode) {
+                isUsingGlobal[0] = false;
+                selectedMode[0] = ConfigManager.MODE_IMAGE;
+                currentTab[0] = 3;
+                catImgScrimMode[0] = ConfigManager.clampScrimMode(scrimMode);
+            }
+            @Override public int getDuotonePreset() { return catImgDuotone[0]; }
+            @Override public void setDuotonePreset(int preset) {
+                isUsingGlobal[0] = false;
+                selectedMode[0] = ConfigManager.MODE_IMAGE;
+                currentTab[0] = 3;
+                catImgDuotone[0] = ConfigManager.clampDuotonePreset(preset);
+                if (updateDialogRef[0] != null) updateDialogRef[0].run();
+            }
+            @Override public long getImageRev() { return catImgRev[0]; }
+            @Override public int getWallPrimary() { return activeWallpaperPrimary(); }
+            @Override public int getWallAccent() { return activeWallpaperAccent(); }
+            @Override
+            public void onBaked(CapsuleImageProcessor.BakeResult result) {
+                if (result == null) return;
+                isUsingGlobal[0] = false;
+                selectedMode[0] = ConfigManager.MODE_IMAGE;
+                currentTab[0] = 3;
+                catImgDomColor[0] = result.dominantColor;
+                catImgLuma[0] = result.avgLuma;
+                catImgRev[0] = result.revision;
+                cacheBakedBitmapInUi(catSlot, result.revision, result.bitmap);
+                if (updateDialogRef[0] != null) updateDialogRef[0].run();
+            }
+            @Override
+            public void onScrimChanged(boolean liveOnly) {
+                isUsingGlobal[0] = false;
+                selectedMode[0] = ConfigManager.MODE_IMAGE;
+                currentTab[0] = 3;
+                if (updateDialogRef[0] != null) updateDialogRef[0].run();
+            }
+            @Override
+            public void onRequestPickPhoto() {
+                launchImagePicker(catSlot, this);
+            }
+        };
+        catImageCtrlRef[0] = CapsuleImagePanelHelper.createController(
+                this, catSlot, mScanExecutor, catImageCallbacks);
+        final LinearLayout imageContainer = new LinearLayout(this);
+        imageContainer.setOrientation(LinearLayout.VERTICAL);
+        imageContainer.setVisibility(View.GONE);
+        imageContainer.addView(CapsuleImagePanelHelper.buildSelectorSection(this, catImageCtrlRef[0]));
+        imageContainer.addView(CapsuleImagePanelHelper.buildLegibilitySection(this, catImageCtrlRef[0], false));
+        card.addView(imageContainer);
+
         // 8. State Update Runnable
+        final Button[] btnAdvancedRef = new Button[1];
+        final View[] advGapRef = new View[1];
         final Runnable updateDialogState = new Runnable() {
             @Override
             public void run() {
@@ -2165,8 +2474,18 @@ public class MainActivity extends Activity {
                 int blurRadiusPx = isBlur ? mConfig.resolveBlurRadiusPx() : 0;
                 int strokeColor = isBlur ? 0x26FFFFFF : 0x22FFFFFF;
 
+                final Runnable dialogSelfRef = this;
                 if (isUsingGlobal[0]) {
-                    if (mConfig.colorMode == ConfigManager.MODE_GRADIENT) {
+                    if (mConfig.colorMode == ConfigManager.MODE_IMAGE && mConfig.imageRev > 0L) {
+                        String gSlot = CapsuleImageProcessor.slotForGlobal();
+                        Bitmap gBmp = resolveBakedBitmapForUi(gSlot, mConfig.imageRev, dialogSelfRef);
+                        int gDom = mConfig.imageDomColor | 0xFF000000;
+                        dialogCapsule.setCapsuleImage(
+                                gBmp, gDom, mConfig.imageLuma, mConfig.imageScrimPercent, mConfig.imageScrimMode);
+                        CapsuleImageDrawable badgeDrawable = new CapsuleImageDrawable();
+                        badgeDrawable.configure(gBmp, gDom, dp(14), 35, ConfigManager.SCRIM_UNIFORM, true, dp(1), 1.0f);
+                        headerIconBg.setBackground(badgeDrawable);
+                    } else if (mConfig.colorMode == ConfigManager.MODE_GRADIENT) {
                         int[] g = isBlur
                                 ? mConfig.resolveGlobalBlurGradientArgb()
                                 : mConfig.resolveGlobalGradientArgb();
@@ -2186,7 +2505,17 @@ public class MainActivity extends Activity {
                         headerIconBg.setBackground(roundRect(baseRgb | 0xFF000000, dp(14), dp(1), 0x33FFFFFF));
                     }
                 } else {
-                    if (selectedMode[0] == ConfigManager.MODE_GRADIENT) {
+                    if (selectedMode[0] == ConfigManager.MODE_IMAGE) {
+                        Bitmap cBmp = catImgRev[0] > 0L
+                                ? resolveBakedBitmapForUi(catSlot, catImgRev[0], dialogSelfRef)
+                                : null;
+                        int cDom = catImgDomColor[0] | 0xFF000000;
+                        dialogCapsule.setCapsuleImage(
+                                cBmp, cDom, catImgLuma[0], catImgScrimPct[0], catImgScrimMode[0]);
+                        CapsuleImageDrawable badgeDrawable = new CapsuleImageDrawable();
+                        badgeDrawable.configure(cBmp, cDom, dp(14), 35, ConfigManager.SCRIM_UNIFORM, true, dp(1), 1.0f);
+                        headerIconBg.setBackground(badgeDrawable);
+                    } else if (selectedMode[0] == ConfigManager.MODE_GRADIENT) {
                         int startArgb = (alpha << 24) | (gradStart[0] & 0x00FFFFFF);
                         int endArgb = (alpha << 24) | (gradEnd[0] & 0x00FFFFFF);
                         dialogCapsule.setCapsuleGradient(startArgb, endArgb, isBlur, blurRadiusPx, strokeColor);
@@ -2207,10 +2536,18 @@ public class MainActivity extends Activity {
                 if (isUsingGlobal[0]) {
                     btnResetGlobal.setBackground(roundRect(0xFF1E3A66, dp(14), 2, 0xFF1477FF));
                     btnResetGlobal.setTextColor(0xFF82B1FF);
-                    String globDesc = (mConfig.colorMode == ConfigManager.MODE_GRADIENT)
-                            ? I18n.get(MainActivity.this, "tab_gradient")
-                            : String.format("#%06X", (mConfig.resolveBaseRgbForCategory(meta.id, liveWall) & 0x00FFFFFF));
-                    int globalOp = isBlur ? OneUiBlurSpec.clampTintOpacity(mConfig.blurTintOpacity) : mConfig.opacity;
+                    String globDesc;
+                    int globalOp;
+                    if (mConfig.colorMode == ConfigManager.MODE_IMAGE) {
+                        globDesc = I18n.get(MainActivity.this, "tab_image");
+                        globalOp = mConfig.imageScrimPercent;
+                    } else if (mConfig.colorMode == ConfigManager.MODE_GRADIENT) {
+                        globDesc = I18n.get(MainActivity.this, "tab_gradient");
+                        globalOp = isBlur ? OneUiBlurSpec.clampTintOpacity(mConfig.blurTintOpacity) : mConfig.opacity;
+                    } else {
+                        globDesc = String.format("#%06X", (mConfig.resolveBaseRgbForCategory(meta.id, liveWall) & 0x00FFFFFF));
+                        globalOp = isBlur ? OneUiBlurSpec.clampTintOpacity(mConfig.blurTintOpacity) : mConfig.opacity;
+                    }
                     btnResetGlobal.setText("✓ " + I18n.get(MainActivity.this, "using_global_color") + " (" + globDesc + " • " + globalOp + "%)");
                 } else {
                     btnResetGlobal.setBackground(roundRect(0xFF2E2E32, dp(14), 1, 0xFF45454A));
@@ -2276,11 +2613,22 @@ public class MainActivity extends Activity {
                 palContainer.setVisibility(currentTab[0] == 0 ? View.VISIBLE : View.GONE);
                 wallContainer.setVisibility(currentTab[0] == 1 ? View.VISIBLE : View.GONE);
                 gradContainer.setVisibility(currentTab[0] == 2 ? View.VISIBLE : View.GONE);
+                imageContainer.setVisibility(currentTab[0] == 3 ? View.VISIBLE : View.GONE);
                 styleSelectableButton(btnTabFixed, currentTab[0] == 0);
                 styleSelectableButton(btnTabWallpaper, currentTab[0] == 1);
                 styleSelectableButton(btnTabGradient, currentTab[0] == 2);
+                styleSelectableButton(btnTabImage, currentTab[0] == 3);
+
+                if (btnAdvancedRef[0] != null) {
+                    btnAdvancedRef[0].setVisibility(currentTab[0] == 3 ? View.GONE : View.VISIBLE);
+                }
+                if (advGapRef[0] != null) {
+                    advGapRef[0].setVisibility(currentTab[0] == 3 ? View.GONE : View.VISIBLE);
+                }
+                catImageCtrlRef[0].refresh();
             }
         };
+        updateDialogRef[0] = updateDialogState;
 
         // Wire swatch click in Fixed Palette
         for (final View swatch : swatchViews) {
@@ -2411,6 +2759,16 @@ public class MainActivity extends Activity {
             }
         });
 
+        btnTabImage.setOnClickListener(new View.OnClickListener() {
+            @Override
+            public void onClick(View v) {
+                currentTab[0] = 3;
+                selectedMode[0] = ConfigManager.MODE_IMAGE;
+                isUsingGlobal[0] = false;
+                updateDialogState.run();
+            }
+        });
+
         btnResetGlobal.setOnClickListener(new View.OnClickListener() {
             @Override
             public void onClick(View v) {
@@ -2433,6 +2791,7 @@ public class MainActivity extends Activity {
         actionsLp.topMargin = dp(14);
 
         Button btnAdvanced = new Button(this);
+        btnAdvancedRef[0] = btnAdvanced;
         btnAdvanced.setAllCaps(false);
         btnAdvanced.setText(I18n.get(this, "btn_advanced"));
         btnAdvanced.setTextColor(0xFFFFFFFF);
@@ -2444,6 +2803,7 @@ public class MainActivity extends Activity {
         btnAdvanced.setBackground(roundRect(0xFF2E2E32, dp(14), 1, 0xFF45454A));
 
         View s1 = new View(this);
+        advGapRef[0] = s1;
 
         Button btnCancel = new Button(this);
         btnCancel.setAllCaps(false);
@@ -2539,12 +2899,21 @@ public class MainActivity extends Activity {
                     cc.customColorMode = ConfigManager.MODE_FIXED_COLOR;
                 } else {
                     cc.useCustomColor = true;
-                    int finalMode = (currentTab[0] == 2) ? ConfigManager.MODE_GRADIENT
-                            : ((currentTab[0] == 1) ? ConfigManager.MODE_LOCK_WALLPAPER : ConfigManager.MODE_FIXED_COLOR);
+                    int finalMode = (currentTab[0] == 3) ? ConfigManager.MODE_IMAGE
+                            : ((currentTab[0] == 2) ? ConfigManager.MODE_GRADIENT
+                                : ((currentTab[0] == 1) ? ConfigManager.MODE_LOCK_WALLPAPER : ConfigManager.MODE_FIXED_COLOR));
                     cc.customColorMode = finalMode;
                     cc.customColor = selectedColor[0];
                     cc.customGradientStart = gradStart[0];
                     cc.customGradientEnd = gradEnd[0];
+                    cc.customImageRev = catImgRev[0];
+                    cc.customImageStyle = catImgStyle[0];
+                    cc.customImageBlurPercent = catImgBlurPct[0];
+                    cc.customImageScrimPercent = catImgScrimPct[0];
+                    cc.customImageScrimMode = catImgScrimMode[0];
+                    cc.customImageDuotonePreset = catImgDuotone[0];
+                    cc.customImageDomColor = catImgDomColor[0];
+                    cc.customImageLuma = catImgLuma[0];
                     cc.useCustomOpacity = hasCustomOpacity[0];
                     cc.customOpacity = selectedOpacity[0];
                     cc.enabled = true;
@@ -2649,6 +3018,31 @@ public class MainActivity extends Activity {
             return;
         }
 
+        if (mConfig.colorMode == ConfigManager.MODE_IMAGE) {
+            String slot = CapsuleImageProcessor.slotForGlobal();
+            Bitmap bmp = mConfig.imageRev > 0L
+                    ? resolveBakedBitmapForUi(slot, mConfig.imageRev, new Runnable() {
+                        @Override
+                        public void run() {
+                            refreshPreviewOnly();
+                        }
+                    })
+                    : null;
+            int dom = mConfig.imageDomColor | 0xFF000000;
+            String scrimLabel = (mConfig.imageScrimMode == ConfigManager.SCRIM_GRADIENT)
+                    ? I18n.get(this, "img_scrim_gradient")
+                    : I18n.get(this, "img_scrim_uniform");
+            mPreviewModeTag.setText(I18n.get(this, "preview_image") + " • " + scrimLabel + " " + mConfig.imageScrimPercent + "%");
+            if (mPreviewMediaCapsule != null) {
+                mPreviewMediaCapsule.setCapsuleImage(
+                        bmp, dom, mConfig.imageLuma, mConfig.imageScrimPercent, mConfig.imageScrimMode);
+            }
+            if (mLockscreenStage != null) {
+                mLockscreenStage.invalidate();
+            }
+            return;
+        }
+
         boolean isBlur = (mConfig.styleMode == ConfigManager.STYLE_BLUR);
         int blurRadiusPx = isBlur ? mConfig.resolveBlurRadiusPx() : 0;
         int tintOp = OneUiBlurSpec.clampTintOpacity(mConfig.blurTintOpacity);
@@ -2695,13 +3089,18 @@ public class MainActivity extends Activity {
         boolean isFixed = (mConfig.colorMode == ConfigManager.MODE_FIXED_COLOR);
         boolean isWall = (mConfig.colorMode == ConfigManager.MODE_LOCK_WALLPAPER);
         boolean isGrad = (mConfig.colorMode == ConfigManager.MODE_GRADIENT);
+        boolean isImg = (mConfig.colorMode == ConfigManager.MODE_IMAGE);
         styleSelectableButton(mBtnFixedMode, isFixed);
         styleSelectableButton(mBtnWallpaperMode, isWall);
         styleSelectableButton(mBtnGradientMode, isGrad);
+        styleSelectableButton(mBtnImageMode, isImg);
 
         mFixedPaletteContainer.setVisibility(isFixed ? View.VISIBLE : View.GONE);
         mWallpaperModeContainer.setVisibility(isWall ? View.VISIBLE : View.GONE);
         mGradientModeContainer.setVisibility(isGrad ? View.VISIBLE : View.GONE);
+        if (mImageModeContainer != null) {
+            mImageModeContainer.setVisibility(isImg ? View.VISIBLE : View.GONE);
+        }
 
         // Update Gradient subtabs & swatches
         if (mBtnGlobalGradStart != null) {
@@ -2760,7 +3159,20 @@ public class MainActivity extends Activity {
             }
         }
 
-        // 4. Update Style Buttons & Finish Sliders (Solid vs Color Blur)
+        // 4. Switch Card 2 between Solid/Blur controls vs Image Legibility/Glass Blur controls
+        if (mFinishCardTitle != null) {
+            mFinishCardTitle.setText(I18n.get(this, isImg ? "img_sec_legibility" : "sec_finish_opacity"));
+        }
+        if (mColorFinishControlsContainer != null) {
+            mColorFinishControlsContainer.setVisibility(isImg ? View.GONE : View.VISIBLE);
+        }
+        if (mImageFinishControlsContainer != null) {
+            mImageFinishControlsContainer.setVisibility(isImg ? View.VISIBLE : View.GONE);
+        }
+        if (mGlobalImagePanel != null) {
+            mGlobalImagePanel.refresh();
+        }
+
         boolean isBlur = (mConfig.styleMode == ConfigManager.STYLE_BLUR);
         styleSelectableButton(mBtnStyleSolid, !isBlur);
         styleSelectableButton(mBtnStyleBlur, isBlur);
@@ -2841,7 +3253,21 @@ public class MainActivity extends Activity {
         return gd;
     }
 
-    private Drawable createCategoryIconBackground(ConfigManager.CategoryConfig cc, int resolvedRgb, int radiusPx) {
+    private Drawable createCategoryIconBackground(String categoryId, ConfigManager.CategoryConfig cc, int resolvedRgb, int radiusPx) {
+        if (mConfig.isImageActiveForCategory(categoryId)) {
+            String slot = mConfig.resolveImageSlotForCategory(categoryId);
+            long rev = mConfig.resolveImageRevForCategory(categoryId);
+            int dom = mConfig.resolveImageDomColorForCategory(categoryId);
+            Bitmap bmp = resolveBakedBitmapForUi(slot, rev, new Runnable() {
+                @Override
+                public void run() {
+                    rebuildCategoriesList();
+                }
+            });
+            CapsuleImageDrawable imgDrawable = new CapsuleImageDrawable();
+            imgDrawable.configure(bmp, dom, radiusPx, 35, ConfigManager.SCRIM_UNIFORM, true, dp(1), 1.0f);
+            return imgDrawable;
+        }
         boolean isCatGrad = cc.useCustomColor && (cc.customColorMode == ConfigManager.MODE_GRADIENT);
         boolean isGlobGrad = !cc.useCustomColor && (mConfig.colorMode == ConfigManager.MODE_GRADIENT);
         if (isCatGrad) {
@@ -2867,7 +3293,7 @@ public class MainActivity extends Activity {
         FrameLayout iconWrap = new FrameLayout(this);
         View iconBg = new View(this);
         int radius = Math.round(sizePx * (14f / 48f));
-        iconBg.setBackground(createCategoryIconBackground(cc, resolvedRgb, radius));
+        iconBg.setBackground(createCategoryIconBackground(meta.id, cc, resolvedRgb, radius));
         iconWrap.addView(iconBg, new FrameLayout.LayoutParams(sizePx, sizePx));
 
         ImageView iconImg = new ImageView(this);

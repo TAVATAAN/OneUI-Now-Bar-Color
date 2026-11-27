@@ -9,10 +9,54 @@ import android.database.Cursor;
 import android.database.MatrixCursor;
 import android.net.Uri;
 import android.os.Bundle;
+import android.os.ParcelFileDescriptor;
+
+import java.io.File;
+import java.io.FileNotFoundException;
+import java.util.List;
 
 public class NowBarConfigProvider extends ContentProvider {
     public static final String AUTHORITY = "io.github.tavataan.nowbarcolor.provider";
     public static final Uri CONTENT_URI = Uri.parse("content://" + AUTHORITY + "/config");
+
+    public static Uri buildImageUri(String slot) {
+        String clean = CapsuleImageProcessor.sanitizeSlot(slot);
+        return Uri.parse("content://" + AUTHORITY + "/image/" + (clean != null ? clean : "invalid"));
+    }
+
+    static File resolveSafeImageFile(Context ctx, Uri uri) throws FileNotFoundException {
+        if (ctx == null || uri == null) {
+            throw new FileNotFoundException("Missing context or uri");
+        }
+        List<String> segments = uri.getPathSegments();
+        if (segments == null || segments.size() != 2 || !"image".equals(segments.get(0))) {
+            throw new FileNotFoundException("Unsupported image uri: " + uri);
+        }
+        String slot = CapsuleImageProcessor.sanitizeSlot(segments.get(1));
+        if (slot == null) {
+            throw new FileNotFoundException("Invalid image slot: " + segments.get(1));
+        }
+        File dir = CapsuleImageProcessor.getImageDir(ctx);
+        File target = CapsuleImageProcessor.getBakedImageFile(ctx, slot);
+        if (target == null) {
+            throw new FileNotFoundException("Image file unavailable");
+        }
+        try {
+            String dirCanon = dir.getCanonicalPath() + File.separator;
+            String targetCanon = target.getCanonicalPath();
+            if (!targetCanon.startsWith(dirCanon)) {
+                throw new FileNotFoundException("Path escapes capsule_images directory");
+            }
+        } catch (FileNotFoundException fnfe) {
+            throw fnfe;
+        } catch (Throwable t) {
+            throw new FileNotFoundException("Failed canonical path check");
+        }
+        if (!target.isFile()) {
+            throw new FileNotFoundException("Image not baked yet for slot: " + slot);
+        }
+        return target;
+    }
 
     @Override
     public boolean onCreate() {
@@ -72,6 +116,15 @@ public class NowBarConfigProvider extends ContentProvider {
     }
 
     @Override
+    public ParcelFileDescriptor openFile(Uri uri, String mode) throws FileNotFoundException {
+        if (mode == null || !mode.startsWith("r") || mode.contains("w") || mode.contains("t")) {
+            throw new SecurityException("Read-only mode required");
+        }
+        File target = resolveSafeImageFile(getContext(), uri);
+        return ParcelFileDescriptor.open(target, ParcelFileDescriptor.MODE_READ_ONLY);
+    }
+
+    @Override
     public Cursor query(Uri uri, String[] projection, String selection, String[] selectionArgs, String sortOrder) {
         Context ctx = getContext();
         if (ctx == null) return null;
@@ -84,6 +137,9 @@ public class NowBarConfigProvider extends ContentProvider {
 
     @Override
     public String getType(Uri uri) {
+        if (uri != null && uri.getPath() != null && uri.getPath().startsWith("/image/")) {
+            return "image/webp";
+        }
         return "vnd.android.cursor.item/vnd.io.github.tavataan.nowbarcolor.config";
     }
 
